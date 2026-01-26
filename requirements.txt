@@ -1,3 +1,4 @@
+accelerate
 fastapi
 hydra-core
 huggingface_hub
@@ -9,5 +10,8 @@ pynvml
 resampy
 sentencepiece
 soundfile
+transformers
+sentencepiece
 uvicorn[standard]
 websockets
+

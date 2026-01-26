@@ -4,13 +4,15 @@ import os
 
 @dataclass
 class Config:
-    # Model
-    model_name: str = os.getenv("MODEL_NAME", "nvidia/nemotron-speech-streaming-en-0.6b")
+    # backend selection
+    asr_backend: str = os.getenv("ASR_BACKEND", "nemotron")  # nemotron|whisper
+
+    # model
+    model_name: str = os.getenv("MODEL_NAME", "")
     device: str = os.getenv("DEVICE", "cuda")  # cuda/cpu
     sample_rate: int = int(os.getenv("SAMPLE_RATE", "16000"))
 
-    # Streaming latency/accuracy knob (right context)
-    # 0 = ultra low latency, 1 = recommended, 6/13 = higher accuracy but more latency
+    # nemotron streaming knob
     context_right: int = int(os.getenv("CONTEXT_RIGHT", "1"))
 
     # VAD + endpointing
@@ -27,19 +29,21 @@ class Config:
     # When finalizing, we add extra zero padding (ms) to flush last words
     finalize_pad_ms: int = int(os.getenv("FINALIZE_PAD_MS", "400"))
 
-    # Keep ring-buffer bounded (avoid slowdowns on long sessions)
+    # Keep ring-buffer bounded
     max_buffer_ms: int = int(os.getenv("MAX_BUFFER_MS", "12000"))
-
-    # Concurrency
-    max_concurrent_inferences: int = int(os.getenv("MAX_CONCURRENT_INFERENCES", "1"))
-
-    # GPU metrics
-    enable_gpu_metrics: bool = os.getenv("ENABLE_GPU_METRICS", "1") == "1"
-    gpu_index: int = int(os.getenv("GPU_INDEX", "0"))
 
     # Logging
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
 
 def load_config() -> Config:
-    return Config()
+    cfg = Config()
+
+    # default model by backend if MODEL_NAME not provided
+    if not cfg.model_name:
+        if cfg.asr_backend == "whisper":
+            cfg.model_name = "openai/whisper-large-v3-turbo"
+        else:
+            cfg.model_name = "nvidia/nemotron-speech-streaming-en-0.6b"
+
+    return cfg

@@ -18,8 +18,12 @@ class EngineCaps:
 class ASRSession(Protocol):
     """
     Session interface the server expects.
+
     Session may optionally expose timing fields:
-      - utt_preproc, utt_infer, utt_flush, chunks
+      - utt_preproc
+      - utt_infer
+      - utt_flush
+      - chunks
     """
     def accept_pcm16(self, pcm16: bytes) -> None: ...
     def step_if_ready(self) -> Optional[str]: ...
@@ -28,14 +32,20 @@ class ASRSession(Protocol):
 
 class ASREngine(ABC):
     """
-    Engine interface.
+    Engine interface implemented by all ASR backends.
     """
     caps: EngineCaps
 
     @abstractmethod
     def load(self) -> float:
+        """
+        Load model weights and return load time in seconds.
+        """
         ...
 
     @abstractmethod
     def new_session(self, max_buffer_ms: int) -> ASRSession:
+        """
+        Create a new per-utterance/session ASR state.
+        """
         ...

@@ -28,6 +28,7 @@ class Config:
 
     # When finalizing, we add extra zero padding (ms) to flush last words
     finalize_pad_ms: int = int(os.getenv("FINALIZE_PAD_MS", "400"))
+    post_speech_pad_ms: int = finalize_pad_ms
 
     # Keep ring-buffer bounded
     max_buffer_ms: int = int(os.getenv("MAX_BUFFER_MS", "12000"))

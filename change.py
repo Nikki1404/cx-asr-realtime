@@ -1,5 +1,4 @@
- => => naming to docker.io/library/bu_digital_cx_asr_realtime                                                                                                                                                                                                         0.0s
-(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime#   docker run --gpus all -p 8000:8000 -e ASR_BACKEND=whisper -e MODEL_NAME=openai/whisper-large-v3-turbo bu_digital_cx_asr_realtime
+(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime#  docker run --gpus all -p 8000:8000 -e ASR_BACKEND=whisper -e MODEL_NAME=openai/whisper-large-v3-turbo bu_digital_cx_asr_realtime
 
 ==========
 == CUDA ==
@@ -24,11 +23,12 @@ INFO:     Waiting for application startup.
 `torch_dtype` is deprecated! Use `dtype` instead!
 Using custom `forced_decoder_ids` from the (generation) config. This is deprecated in favor of the `task` and `language` flags/config options.
 Transcription using a multilingual Whisper will default to language detection followed by transcription instead of translation to English. This might be a breaking change for your use case. If you want to instead always translate your audio to English, make sure to pass `language='en'`. See https://github.com/huggingface/transformers/pull/28687 for more details.
-INFO:asr_server:ASR backend=whisper model=openai/whisper-large-v3-turbo loaded in 30.88s
+The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+INFO:asr_server:ASR backend=whisper model=openai/whisper-large-v3-turbo loaded in 32.49s
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     172.17.0.1:45076 - "WebSocket /ws/asr" [accepted]
-INFO:asr_server:WS connected: Address(host='172.17.0.1', port=45076)
+INFO:     172.17.0.1:41450 - "WebSocket /ws/asr" [accepted]
+INFO:asr_server:WS connected: Address(host='172.17.0.1', port=41450)
 INFO:     connection open
 INFO:asr_server:WS disconnected
 ERROR:    Exception in ASGI application
@@ -71,38 +71,10 @@ Traceback (most recent call last):
     final = session.finalize(cfg.post_speech_pad_ms)
   File "/usr/local/lib/python3.10/dist-packages/torch/utils/_contextlib.py", line 116, in decorate_context
     return func(*args, **kwargs)
-  File "/srv/app/asr_engines/whisper_asr.py", line 149, in finalize
+  File "/srv/app/asr_engines/whisper_asr.py", line 165, in finalize
     generated_ids = self.engine.model.generate(
-  File "/usr/local/lib/python3.10/dist-packages/transformers/models/whisper/generation_whisper.py", line 704, in generate
-    init_tokens = self._retrieve_init_tokens(
-  File "/usr/local/lib/python3.10/dist-packages/transformers/models/whisper/generation_whisper.py", line 1572, in _retrieve_init_tokens
-    lang_ids = self.detect_language(
-  File "/usr/local/lib/python3.10/dist-packages/transformers/models/whisper/generation_whisper.py", line 1676, in detect_language
-    logits = self(**inputs, decoder_input_ids=decoder_input_ids, use_cache=False).logits[:, -1]
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
-    return forward_call(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/transformers/models/whisper/modeling_whisper.py", line 1289, in forward
-    outputs = self.model(
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
-    return forward_call(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/transformers/models/whisper/modeling_whisper.py", line 1114, in forward
-    encoder_outputs = self.encoder(
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
-    return forward_call(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/transformers/models/whisper/modeling_whisper.py", line 679, in forward
-    inputs_embeds = nn.functional.gelu(self.conv1(input_features))
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
-    return forward_call(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/conv.py", line 375, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/conv.py", line 370, in _conv_forward
-    return F.conv1d(
-RuntimeError: Input type (float) and bias type (c10::Half) should be the same
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/whisper/generation_whisper.py", line 847, in generate
+    self._set_max_new_tokens_and_length(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/whisper/generation_whisper.py", line 1946, in _set_max_new_tokens_and_length
+    raise ValueError(
+ValueError: The length of `decoder_input_ids`, including special start tokens, prompt tokens, and previous tokens, is 4,  and `max_new_tokens` is 448. Thus, the combined length of `decoder_input_ids` and `max_new_tokens` is: 452. This exceeds the `max_target_positions` of the Whisper model: 448. You should either reduce the length of your prompt, or reduce the value of `max_new_tokens`, so that their combined length is less than 448.

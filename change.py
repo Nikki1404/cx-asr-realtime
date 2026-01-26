@@ -1,93 +1,254 @@
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     172.17.0.1:58914 - "WebSocket /ws/asr" [accepted]
-ERROR:    Exception in ASGI application
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.10/dist-packages/uvicorn/protocols/websockets/websockets_impl.py", line 244, in run_asgi
-    result = await self.app(self.scope, self.asgi_receive, self.asgi_send)  # type: ignore[func-returns-value]
-  File "/usr/local/lib/python3.10/dist-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
-    return await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/applications.py", line 1135, in __call__
-    await super().__call__(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/applications.py", line 107, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/errors.py", line 151, in __call__
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/exceptions.py", line 63, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
-    raise exc
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
-    await app(scope, receive, sender)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 716, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 736, in app
-    await route.handle(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 364, in handle
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 141, in app
-    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
-    raise exc
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
-    await app(scope, receive, sender)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 138, in app
-    await func(session)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 438, in app
-    await dependant.call(**solved_result.values)
-  File "/srv/app/main.py", line 47, in ws_asr
+metrics.py-
+from prometheus_client import Counter, Histogram, Gauge
+
+LABELS = ["backend", "model"]
+
+ACTIVE_STREAMS = Gauge("asr_active_streams", "Active websocket streams", LABELS)
+
+PARTIALS_TOTAL = Counter("asr_partials_total", "Partial messages sent", LABELS)
+FINALS_TOTAL = Counter("asr_finals_total", "Final messages sent", LABELS)
+UTTERANCES_TOTAL = Counter("asr_utterances_total", "Utterances finalized", LABELS)
+
+# NOTE: TTFT only recorded when engine.caps.ttft_meaningful == True (Nemotron)
+TTFT_WALL = Histogram("asr_ttft_wall_sec", "Wall TTFT seconds (streaming only)", LABELS)
+TTF_WALL  = Histogram("asr_ttf_wall_sec", "Wall TTF seconds", LABELS)
+
+INFER_SEC = Histogram("asr_infer_sec", "Model inference seconds", LABELS)
+PREPROC_SEC = Histogram("asr_preproc_sec", "Model preproc seconds", LABELS)
+FLUSH_SEC = Histogram("asr_flush_sec", "Finalize/flush wall seconds", LABELS)
+
+AUDIO_SEC = Histogram("asr_audio_sec", "Audio seconds per utterance", LABELS)
+RTF = Histogram("asr_rtf", "Real-time factor (infer/audio)", LABELS)
+
+BACKLOG_MS = Gauge("asr_backlog_ms", "Buffered audio backlog (ms)", LABELS)
+
+
+GPU_UTIL = Gauge("asr_gpu_util", "GPU utilization percent")
+GPU_MEM_USED_MB = Gauge("asr_gpu_mem_used_mb", "GPU memory used MB")
+GPU_MEM_TOTAL_MB = Gauge("asr_gpu_mem_total_mb", "GPU memory total MB")
+
+#main.py-
+
+import asyncio
+import json
+import time
+import logging
+
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
+from app.config import load_config
+from app.metrics import *
+from app.vad import AdaptiveEnergyVAD
+from app.factory import build_engine   
+from app.asr_engines.base import ASREngine  
+
+cfg = load_config()
+logging.basicConfig(level=cfg.log_level)
+log = logging.getLogger("asr_server")
+
+app = FastAPI()
+engine: ASREngine | None = None   
+
+@app.on_event("startup")
+async def startup():
+    global engine
+
+    engine = build_engine(cfg)
+    load_sec = engine.load()
+
+    log.info(
+        f"ASR backend={cfg.asr_backend} "
+        f"model={cfg.model_name} "
+        f"loaded in {load_sec:.2f}s"
+    )
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.websocket("/ws/asr")
+async def ws_asr(ws: WebSocket):
+    assert engine is not None
+
+    await ws.accept()
     ACTIVE_STREAMS.inc()
-  File "/usr/local/lib/python3.10/dist-packages/prometheus_client/metrics.py", line 448, in inc
-    self._raise_if_not_observable()
-  File "/usr/local/lib/python3.10/dist-packages/prometheus_client/metrics.py", line 78, in _raise_if_not_observable
-    raise ValueError('%s metric is missing label values' % str(self._type))
-ValueError: gauge metric is missing label values
-INFO:     connection open
-INFO:     connection closed
-INFO:     172.17.0.1:37798 - "WebSocket /ws/asr" [accepted]
-ERROR:    Exception in ASGI application
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.10/dist-packages/uvicorn/protocols/websockets/websockets_impl.py", line 244, in run_asgi
-    result = await self.app(self.scope, self.asgi_receive, self.asgi_send)  # type: ignore[func-returns-value]
-  File "/usr/local/lib/python3.10/dist-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
-    return await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/applications.py", line 1135, in __call__
-    await super().__call__(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/applications.py", line 107, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/errors.py", line 151, in __call__
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/exceptions.py", line 63, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
-    raise exc
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
-    await app(scope, receive, sender)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 716, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 736, in app
-    await route.handle(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 364, in handle
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 141, in app
-    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
-    raise exc
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
-    await app(scope, receive, sender)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 138, in app
-    await func(session)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 438, in app
-    await dependant.call(**solved_result.values)
-  File "/srv/app/main.py", line 47, in ws_asr
-    ACTIVE_STREAMS.inc()
-  File "/usr/local/lib/python3.10/dist-packages/prometheus_client/metrics.py", line 448, in inc
-    self._raise_if_not_observable()
-  File "/usr/local/lib/python3.10/dist-packages/prometheus_client/metrics.py", line 78, in _raise_if_not_observable
-    raise ValueError('%s metric is missing label values' % str(self._type))
-ValueError: gauge metric is missing label values
-INFO:     connection open
-INFO:     connection closed
+    log.info(f"WS connected: {ws.client}")
+
+    vad = AdaptiveEnergyVAD(
+        cfg.sample_rate,
+        cfg.vad_frame_ms,
+        cfg.vad_start_margin,
+        cfg.vad_min_noise_rms,
+        cfg.pre_speech_ms,
+    )
+
+    session = engine.new_session(max_buffer_ms=cfg.max_utt_ms)
+
+    frame_bytes = int(cfg.sample_rate * cfg.vad_frame_ms / 1000) * 2
+    raw_buf = bytearray()
+
+    utt_started = False
+    utt_audio_ms = 0
+    t_utt_start = None
+    t_first_partial = None
+    silence_ms = 0
+
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+
+            data = msg.get("bytes")
+            if data is None:
+                continue
+
+            # EOS from client
+            if data == b"":
+                if utt_started:
+                    final = session.finalize(cfg.post_speech_pad_ms)
+                    await _emit_final(
+                        ws,
+                        session,
+                        final,
+                        utt_audio_ms,
+                        t_utt_start,
+                        t_first_partial,
+                        reason="eos",
+                    )
+                break
+
+            raw_buf.extend(data)
+
+            while len(raw_buf) >= frame_bytes:
+                frame = bytes(raw_buf[:frame_bytes])
+                del raw_buf[:frame_bytes]
+
+                is_speech, pre = vad.push_frame(frame)
+
+                if is_speech:
+                    silence_ms = 0
+                else:
+                    silence_ms += cfg.vad_frame_ms
+
+                # ---- Utterance start ----
+                if pre and not utt_started:
+                    utt_started = True
+                    utt_audio_ms = 0
+                    t_utt_start = time.time()
+                    t_first_partial = None
+                    silence_ms = 0
+                    session.accept_pcm16(pre)
+
+                if not utt_started:
+                    continue
+
+                session.accept_pcm16(frame)
+                utt_audio_ms += cfg.vad_frame_ms
+
+                # ---- PARTIALS (only if supported) ----
+                if engine.caps.partials:
+                    text = session.step_if_ready()
+                    if text:
+                        PARTIALS_TOTAL.inc()
+                        if t_first_partial is None:
+                            t_first_partial = time.time()
+                            if engine.caps.ttft_meaningful:
+                                TTFT_WALL.observe(t_first_partial - t_utt_start)
+                        await ws.send_text(json.dumps({"type": "partial", "text": text}))
+
+                # ---- Endpointing ----
+                if (
+                    not is_speech
+                    and utt_audio_ms >= cfg.min_utt_ms
+                    and silence_ms >= cfg.end_silence_ms
+                ):
+                    final = session.finalize(cfg.post_speech_pad_ms)
+                    await _emit_final(
+                        ws,
+                        session,
+                        final,
+                        utt_audio_ms,
+                        t_utt_start,
+                        t_first_partial,
+                        reason="silence",
+                    )
+                    vad.reset()
+                    utt_started = False
+                    utt_audio_ms = 0
+                    silence_ms = 0
+
+                # ---- Hard max ----
+                elif utt_audio_ms >= cfg.max_utt_ms:
+                    final = session.finalize(cfg.post_speech_pad_ms)
+                    await _emit_final(
+                        ws,
+                        session,
+                        final,
+                        utt_audio_ms,
+                        t_utt_start,
+                        t_first_partial,
+                        reason="max_utt",
+                    )
+                    vad.reset()
+                    utt_started = False
+                    utt_audio_ms = 0
+                    silence_ms = 0
+
+    finally:
+        ACTIVE_STREAMS.dec()
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        log.info("WS disconnected")
+
+
+async def _emit_final(
+    ws: WebSocket,
+    session,
+    final_text: str,
+    audio_ms: int,
+    t_start: float,
+    t_first_partial: float | None,
+    reason: str,
+):
+    if not final_text:
+        return
+
+    UTTERANCES_TOTAL.inc()
+    FINALS_TOTAL.inc()
+
+    audio_sec = audio_ms / 1000.0
+    ttf = time.time() - t_start if t_start else 0.0
+
+    TTF_WALL.observe(ttf)
+    AUDIO_SEC.observe(audio_sec)
+
+    compute_sec = session.utt_preproc + session.utt_infer + session.utt_flush
+    if audio_sec > 0:
+        RTF.observe(compute_sec / audio_sec)
+
+    payload = {
+        "type": "final",
+        "text": final_text,
+        "reason": reason,
+        "audio_ms": audio_ms,
+        "ttf_ms": int(ttf * 1000),
+        "ttft_ms": (
+            int((t_first_partial - t_start) * 1000)
+            if t_first_partial and engine.caps.ttft_meaningful
+            else None
+        ),
+        "chunks": session.chunks,
+        "model_preproc_ms": int(session.utt_preproc * 1000),
+        "model_infer_ms": int(session.utt_infer * 1000),
+        "model_flush_ms": int(session.utt_flush * 1000),
+        "rtf": (compute_sec / audio_sec) if audio_sec > 0 else None,
+    }
+
+    await ws.send_text(json.dumps(payload))

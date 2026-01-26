@@ -1,51 +1,93 @@
-from __future__ import annotations
-
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional, Protocol
-
-
-@dataclass(frozen=True)
-class EngineCaps:
-    """
-    Declares behavioral capabilities of an ASR engine.
-    """
-    streaming: bool          # true streaming model with incremental state
-    partials: bool           # supports partial outputs during speech
-    ttft_meaningful: bool    # whether TTFT is meaningful (streaming only)
-
-
-class ASRSession(Protocol):
-    """
-    Session interface the server expects.
-
-    Session may optionally expose timing fields:
-      - utt_preproc
-      - utt_infer
-      - utt_flush
-      - chunks
-    """
-    def accept_pcm16(self, pcm16: bytes) -> None: ...
-    def step_if_ready(self) -> Optional[str]: ...
-    def finalize(self, pad_ms: int) -> str: ...
-
-
-class ASREngine(ABC):
-    """
-    Engine interface implemented by all ASR backends.
-    """
-    caps: EngineCaps
-
-    @abstractmethod
-    def load(self) -> float:
-        """
-        Load model weights and return load time in seconds.
-        """
-        ...
-
-    @abstractmethod
-    def new_session(self, max_buffer_ms: int) -> ASRSession:
-        """
-        Create a new per-utterance/session ASR state.
-        """
-        ...
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     172.17.0.1:58914 - "WebSocket /ws/asr" [accepted]
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/protocols/websockets/websockets_impl.py", line 244, in run_asgi
+    result = await self.app(self.scope, self.asgi_receive, self.asgi_send)  # type: ignore[func-returns-value]
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/applications.py", line 1135, in __call__
+    await super().__call__(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/applications.py", line 107, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 364, in handle
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 141, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 138, in app
+    await func(session)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 438, in app
+    await dependant.call(**solved_result.values)
+  File "/srv/app/main.py", line 47, in ws_asr
+    ACTIVE_STREAMS.inc()
+  File "/usr/local/lib/python3.10/dist-packages/prometheus_client/metrics.py", line 448, in inc
+    self._raise_if_not_observable()
+  File "/usr/local/lib/python3.10/dist-packages/prometheus_client/metrics.py", line 78, in _raise_if_not_observable
+    raise ValueError('%s metric is missing label values' % str(self._type))
+ValueError: gauge metric is missing label values
+INFO:     connection open
+INFO:     connection closed
+INFO:     172.17.0.1:37798 - "WebSocket /ws/asr" [accepted]
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/protocols/websockets/websockets_impl.py", line 244, in run_asgi
+    result = await self.app(self.scope, self.asgi_receive, self.asgi_send)  # type: ignore[func-returns-value]
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/applications.py", line 1135, in __call__
+    await super().__call__(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/applications.py", line 107, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 364, in handle
+    await self.app(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 141, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 138, in app
+    await func(session)
+  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 438, in app
+    await dependant.call(**solved_result.values)
+  File "/srv/app/main.py", line 47, in ws_asr
+    ACTIVE_STREAMS.inc()
+  File "/usr/local/lib/python3.10/dist-packages/prometheus_client/metrics.py", line 448, in inc
+    self._raise_if_not_observable()
+  File "/usr/local/lib/python3.10/dist-packages/prometheus_client/metrics.py", line 78, in _raise_if_not_observable
+    raise ValueError('%s metric is missing label values' % str(self._type))
+ValueError: gauge metric is missing label values
+INFO:     connection open
+INFO:     connection closed

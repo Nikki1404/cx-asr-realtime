@@ -70,7 +70,16 @@ class WhisperTurboASR(ASREngine):
                 sampling_rate=self.sr,
                 return_tensors="pt",
             )
-            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+            # ✅ FIX (only change): match model dtype
+            inputs = {
+                k: v.to(
+                    device=self.model.device,
+                    dtype=self.model.dtype
+                )
+                for k, v in inputs.items()
+            }
+
             _ = self.model.generate(**inputs)
         except Exception:
             # Warmup must never crash startup
@@ -142,7 +151,14 @@ class WhisperSession:
         )
         self.utt_preproc += (time.perf_counter() - t0)
 
-        inputs = {k: v.to(self.engine.model.device) for k, v in inputs.items()}
+        # ✅ FIX (only change): match model dtype
+        inputs = {
+            k: v.to(
+                device=self.engine.model.device,
+                dtype=self.engine.model.dtype
+            )
+            for k, v in inputs.items()
+        }
 
         # inference
         t1 = time.perf_counter()

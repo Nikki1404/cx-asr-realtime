@@ -1,103 +1,131 @@
-# Realtime ASR with NVIDIA Nemotron (Streaming)
+# Realtime ASR Benchmarking & Streaming Service
 
-This project implements **true realtime speech-to-text** using **NVIDIA NeMo Nemotron streaming ASR** with:
+This repository provides a **production-ready realtime ASR service** with pluggable backends, designed to **compare true streaming ASR vs batch ASR** under identical VAD, endpointing, and metrics instrumentation.
 
-- Live microphone input 
-- Low-latency partial transcriptions
-- Accurate final transcripts on pause
-- Built-in **latency & performance metrics**
-- WebSocket-based streaming API
+Currently supported ASR engines:
+- **Nemotron Streaming ASR** (true streaming, low TTFT, partials)
+- **Whisper Turbo Large v3** (batch ASR, high accuracy, no partials)
 
 ---
 
-##  Features
+## High-Level Architecture
 
-- Realtime partial transcripts
-- Automatic finalization on silence
-- Metrics per utterance:
-  - TTFT (time to first token)
-  - TTF (time to final)
-  - RTF (real-time factor)
-  - Preprocess / inference / flush time
-  - Chunk count
-- Prometheus metrics endpoint
-- GPU-accelerated (CUDA)
+Client (Mic / PCM16)
+→ WebSocket (/ws/asr)
+→ VAD + Endpointing
+→ ASR Engine (Nemotron or Whisper)
 
 ---
 
-##  Model Used
+## Key Design Principles
 
-- `nvidia/nemotron-speech-streaming-en-0.6b`
-- Loaded via **Hugging Face** using NeMo
+### 1. Single Unified Pipeline
+- Same WebSocket API
+- Same VAD + endpointing
+- Same metrics
+- Same client behavior
 
----
+Only the ASR engine implementation differs.
 
-##  How to Run
+### 2. Correct Model-Specific Behavior
 
-### Start server (Docker)
+We do **not** force batch models into fake streaming.
 
-```bash
-docker build -t cx_asr_realtime .
-docker run --gpus all -p 8003:8003 cx_asr_realtime
-```
-
-Endpoints:
-- WebSocket ASR: `ws://localhost:8003/ws/asr`
-- Metrics: `http://localhost:8003/metrics`
-
----
-
-### Run client (microphone)
-
-```bash
-python scripts/ws_client.py --mic --url ws://127.0.0.1:8003/ws/asr
-```
-### Client WAV
-
-```bash
-python scripts/ws_client.py --wav sample.wav --url ws://127.0.0.1:8002/ws/asr
-```
-
-You will see:
-- `[PARTIAL]` updates while speaking
-- `[FINAL]` transcript after pause
-- `[SERVER_METRICS]` printed immediately after finalization
+| Capability | Nemotron | Whisper |
+|----------|---------|--------|
+| True streaming | Yes | No |
+| Partials | Yes | No |
+| TTFT meaningful | Yes | No |
+| Decoder state | Incremental | Full-context |
 
 ---
 
-##  Example Metrics Output
+## ASR Engines
 
-```
-[FINAL] Hello, this is a realtime ASR test
-[SERVER_METRICS]
-reason=pause
-ttft_ms=517
-ttf_ms=7635
-audio_ms=7600
-rtf=0.25
-chunks=26
-preproc_ms=466
-infer_ms=1920
-flush_ms=40
-```
+### Nemotron Streaming ASR
+- Uses NeMo conformer_stream_step
+- Stateful streaming
+- Partial transcripts + TTFT
+- Best for realtime use cases
 
-### Interpretation
-
-- First text appears in ~0.5s
-- Final transcript emitted ~35ms after you stop speaking
-- Model runs ~4× faster than real time
+### Whisper Turbo Large v3
+- Batch decode using generate()
+- Endpointed transcription
+- No partials, no TTFT
+- Best for offline / post-call ASR
 
 ---
 
-##  Key Configuration
+## Metrics
 
-```bash
-CONTEXT_RIGHT=1        # latency vs accuracy tradeoff
-END_SILENCE_MS=900    # pause duration to finalize
-FINALIZE_PAD_MS=400   # padding to flush last words
-MAX_BUFFER_MS=12000
-```
+Metrics endpoint:
+GET /metrics
+
+All ASR metrics are labeled with:
+- backend
+- model
+
+TTFT is recorded **only** for Nemotron.
 
 ---
 
-This setup provides **production-grade realtime ASR with accurate metrics**.
+## Example Result (Whisper Turbo)
+
+[FINAL] Hello, this is Mike testing for ASR Whisper Turbo Large V3  
+reason=silence  
+ttft_ms=None  
+ttf_ms=12328  
+audio_ms=12160  
+rtf=0.065  
+
+Interpretation:
+- Very low compute cost
+- Latency dominated by audio duration
+- Expected batch ASR behavior
+
+---
+
+## Running the Service
+
+Docker (GPU):
+
+docker run --gpus all -p 8000:8000 \
+  -e ASR_BACKEND=whisper \
+  -e MODEL_NAME=openai/whisper-large-v3-turbo \
+  bu_digital_cx_asr_realtime
+
+---
+
+## WebSocket API
+
+Endpoint:
+ws://<host>:8000/ws/asr
+
+Audio format:
+- PCM16
+- 16kHz
+- Mono
+- Binary frames
+- Empty frame signals EOS
+
+---
+
+## When to Use Which Engine
+
+Use Nemotron when:
+- Realtime interaction needed
+- Partial transcripts required
+
+Use Whisper when:
+- Accuracy > latency
+- Offline / batch transcription
+
+---
+
+## Final Note
+
+This system prioritizes:
+- Correct ASR behavior
+- Clean metrics
+- Production safety
+- Future extensibility

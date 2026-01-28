@@ -20,10 +20,10 @@ Client (Mic / PCM16)
 ## Key Design Principles
 
 ### 1. Single Unified Pipeline
-- Same WebSocket API
-- Same VAD + endpointing
-- Same metrics
-- Same client behavior
+- WebSocket API
+- VAD + endpointing
+- metrics
+- client behavior
 
 Only the ASR engine implementation differs.
 

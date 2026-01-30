@@ -55,7 +55,7 @@ def load_config() -> Config:
     if cfg.asr_backend == "whisper":
         cfg.backend_params = BackendParams(
             end_silence_ms=int(os.getenv("WHISPER_END_SILENCE_MS", "450")),
-            short_pause_flush_ms=int(os.getenv("WHISPER_SHORT_PAUSE_FLUSH_MS", "450")),
+            short_pause_flush_ms=int(os.getenv("WHISPER_SHORT_PAUSE_FLUSH_MS", "350")),
             min_utt_ms=int(os.getenv("WHISPER_MIN_UTT_MS", "250")),
             finalize_pad_ms=cfg.post_speech_pad_ms,
         )
@@ -67,7 +67,7 @@ def load_config() -> Config:
             finalize_pad_ms=cfg.post_speech_pad_ms,
         )
 
-    # 🔑 IMPORTANT: expose backend params to main.py (NO CODE CHANGE THERE)
+    # IMPORTANT: expose backend params to main.py (NO CODE CHANGE THERE)
     cfg.end_silence_ms = cfg.backend_params.end_silence_ms
     cfg.min_utt_ms = cfg.backend_params.min_utt_ms
     cfg.post_speech_pad_ms = cfg.backend_params.finalize_pad_ms

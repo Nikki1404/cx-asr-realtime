@@ -54,7 +54,7 @@ def load_config() -> Config:
     # Backend-specific tuning
     if cfg.asr_backend == "whisper":
         cfg.backend_params = BackendParams(
-            end_silence_ms=int(os.getenv("WHISPER_END_SILENCE_MS", "450")),
+            end_silence_ms=int(os.getenv("WHISPER_END_SILENCE_MS", "900")),
             short_pause_flush_ms=int(os.getenv("WHISPER_SHORT_PAUSE_FLUSH_MS", "350")),
             min_utt_ms=int(os.getenv("WHISPER_MIN_UTT_MS", "250")),
             finalize_pad_ms=cfg.post_speech_pad_ms,

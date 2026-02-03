@@ -20,20 +20,16 @@ except Exception:
 
 TARGET_SR = 16000
 
+# For Nemotron RNNT stability: 80–120ms chunks work well
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 SLEEP_SEC = CHUNK_MS / 1000.0
 
-
-# Client-side state
-class ClientState:
-    def __init__(self):
-        self.received_partial = False
-        self.received_final = False
-        self.last_audio_ts = time.time()
+# ---- Whisper UX state ----
+last_audio_time = 0.0
+is_whisper = False
 
 
-# Utilities
 def resample_to_16k(wav_path: str) -> str:
     audio, sr = sf.read(wav_path, dtype="float32")
     if audio.ndim > 1:
@@ -49,10 +45,12 @@ def resample_to_16k(wav_path: str) -> str:
     return tmp.name
 
 
-# Receiver
-async def receiver(ws, state: ClientState):
+async def receiver(ws):
+    """
+    Prints partials live (Nemotron).
+    Prints finals + server metrics after pause (all engines).
+    """
     finals = []
-
     while True:
         try:
             msg = await ws.recv()
@@ -63,76 +61,73 @@ async def receiver(ws, state: ClientState):
         typ = obj.get("type")
 
         if typ == "partial":
-            state.received_partial = True
             txt = obj.get("text", "").replace("\n", " ")
             sys.stdout.write("\r[PARTIAL] " + txt[:160] + " " * 20)
             sys.stdout.flush()
 
         elif typ == "final":
-            state.received_final = True
             txt = (obj.get("text") or "").strip()
             print("\n[FINAL]", txt)
             finals.append(txt)
 
-            print("[SERVER_METRICS]",
-                  f"reason={obj.get('reason')}",
-                  f"ttft_ms={obj.get('ttft_ms')}",
-                  f"ttf_ms={obj.get('ttf_ms')}",
-                  f"audio_ms={obj.get('audio_ms')}",
-                  f"rtf={obj.get('rtf')}",
-                  f"chunks={obj.get('chunks')}",
-                  f"preproc_ms={obj.get('model_preproc_ms')}",
-                  f"infer_ms={obj.get('model_infer_ms')}",
-                  f"flush_ms={obj.get('model_flush_ms')}",
-                  )
+            print(
+                "[SERVER_METRICS]",
+                f"reason={obj.get('reason')}",
+                f"ttft_ms={obj.get('ttft_ms')}",
+                f"ttf_ms={obj.get('ttf_ms')}",
+                f"audio_ms={obj.get('audio_ms')}",
+                f"rtf={obj.get('rtf')}",
+                f"chunks={obj.get('chunks')}",
+                f"preproc_ms={obj.get('model_preproc_ms')}",
+                f"infer_ms={obj.get('model_infer_ms')}",
+                f"flush_ms={obj.get('model_flush_ms')}",
+            )
 
 
-
-# Whisper UX status loop
-async def whisper_status_loop(state: ClientState):
+async def whisper_status_printer():
     """
-    Shows 'Transcribing…' ONLY when:
-    - No partials are coming (Whisper)
-    - Audio has stopped recently
-    - Final has not arrived yet
+    Client-side UX for Whisper:
+    shows status while user is actively speaking.
     """
-    while not state.received_final:
-        await asyncio.sleep(0.3)
-
-        if not state.received_partial:
-            idle = time.time() - state.last_audio_ts
-            if idle > 0.6:
-                sys.stdout.write("\r[WHISPER] ⏳ Transcribing… please wait   ")
-                sys.stdout.flush()
+    while True:
+        await asyncio.sleep(0.4)
+        if time.time() - last_audio_time < 1.0:
+            sys.stdout.write("\r⏳ Whisper is transcribing…   ")
+            sys.stdout.flush()
 
 
+async def run_wav(ws, wav_path: str, realtime: bool):
+    global last_audio_time
 
-# WAV sender
-async def run_wav(ws, wav_path: str, realtime: bool, state: ClientState):
     with wave.open(wav_path, "rb") as wf:
         while True:
             data = wf.readframes(CHUNK_FRAMES)
             if not data:
                 break
+            last_audio_time = time.time()
             await ws.send(data)
-            state.last_audio_ts = time.time()
             if realtime:
                 await asyncio.sleep(SLEEP_SEC)
 
-    await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
+    # silence + EOS
+    silence_frames = int(TARGET_SR * 0.8)
+    await ws.send(b"\x00\x00" * silence_frames)
     await asyncio.sleep(0.8)
     await ws.send(b"")
 
 
-# Mic sender
-async def run_mic(ws, state: ClientState):
+async def run_mic(ws):
+    global last_audio_time
+
     if not HAS_MIC:
-        raise RuntimeError("sounddevice not installed. pip install sounddevice")
+        raise RuntimeError("sounddevice not installed. Install: pip install sounddevice")
 
     loop = asyncio.get_running_loop()
     q: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
 
     def cb(indata, frames, t, status):
+        global last_audio_time
+        last_audio_time = time.time()
         loop.call_soon_threadsafe(q.put_nowait, indata.copy())
 
     stream = sd.InputStream(
@@ -153,7 +148,6 @@ async def run_mic(ws, state: ClientState):
                 return
             try:
                 await ws.send(blk.tobytes())
-                state.last_audio_ts = time.time()
             except websockets.exceptions.ConnectionClosed:
                 return
 
@@ -167,6 +161,7 @@ async def run_mic(ws, state: ClientState):
     finally:
         stream.stop()
         stream.close()
+
         try:
             await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
             await asyncio.sleep(0.8)
@@ -178,27 +173,31 @@ async def run_mic(ws, state: ClientState):
         await send_task
 
 
-
-# Main
 async def main():
+    global is_whisper
+
     p = argparse.ArgumentParser()
     p.add_argument("--url", default="ws://127.0.0.1:8000/ws/asr")
     p.add_argument("--wav", help="Path to wav file")
-    p.add_argument("--mic", action="store_true")
-    p.add_argument("--fast", action="store_true")
+    p.add_argument("--mic", action="store_true", help="Use live microphone")
+    p.add_argument("--fast", action="store_true", help="Disable realtime pacing (wav only)")
     args = p.parse_args()
 
-    state = ClientState()
+    is_whisper = os.getenv("ASR_BACKEND") == "whisper"
+
     start = time.time()
 
     async with websockets.connect(args.url, max_size=None) as ws:
         print(f"[INFO] Connected to {args.url}")
 
-        recv_task = asyncio.create_task(receiver(ws, state))
-        status_task = asyncio.create_task(whisper_status_loop(state))
+        recv_task = asyncio.create_task(receiver(ws))
+
+        status_task = None
+        if is_whisper:
+            status_task = asyncio.create_task(whisper_status_printer())
 
         if args.mic:
-            await run_mic(ws, state)
+            await run_mic(ws)
         else:
             if not args.wav:
                 raise ValueError("--wav required unless --mic is set")
@@ -212,19 +211,22 @@ async def main():
                 wav = resample_to_16k(wav)
                 cleanup = wav
 
-            await run_wav(ws, wav, realtime=not args.fast, state=state)
+            await run_wav(ws, wav, realtime=not args.fast)
 
             if cleanup:
                 os.unlink(cleanup)
 
         finals = await recv_task
-        status_task.cancel()
 
+        if status_task:
+            status_task.cancel()
+
+    total = time.time() - start
     print("\nFULL TRANSCRIPT:")
     print(" ".join([t for t in finals if t.strip()]))
 
     print("\nCLIENT METRICS:")
-    print(f"Total wall time: {time.time() - start:.2f}s")
+    print(f"Total wall time: {total:.2f}s")
 
 
 if __name__ == "__main__":

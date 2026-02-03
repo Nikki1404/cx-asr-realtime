@@ -43,9 +43,7 @@ async def ws_asr(ws: WebSocket):
     assert engine is not None
     await ws.accept()
 
-    # ===========================
-    # 🔑 PROMETHEUS LABEL BINDING
-    # ===========================
+    #  PROMETHEUS LABEL BINDING
     labels = (cfg.asr_backend, cfg.model_name)
 
     active_streams = ACTIVE_STREAMS.labels(*labels)
@@ -135,9 +133,7 @@ async def ws_asr(ws: WebSocket):
                     silence_ms = 0
                     session.accept_pcm16(pre)
 
-                    # ===============================
-                    # ✅ ADD (Whisper UX): show buffering while user speaks
-                    # ===============================
+                    #  ADD (Whisper UX): show buffering while user speaks
                     if cfg.asr_backend == "whisper":
                         await ws.send_text(json.dumps({
                             "type": "status",
@@ -162,10 +158,9 @@ async def ws_asr(ws: WebSocket):
                                 ttft_wall.observe(t_first_partial - t_utt_start)
                         await ws.send_text(json.dumps({"type": "partial", "text": text}))
 
-                # ==========================================================
-                # ✅ ADD: WHISPER SHORT-PAUSE EARLY FLUSH (Nemotron unaffected)
+
+                #  ADD: WHISPER SHORT-PAUSE EARLY FLUSH (Nemotron unaffected)
                 # Put this BEFORE the common endpoint block below.
-                # ==========================================================
                 if (
                     cfg.asr_backend == "whisper"
                     and cfg.backend_params is not None

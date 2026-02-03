@@ -1,242 +1,85 @@
-import asyncio
-import argparse
-import json
-import os
-import sys
-import time
-import wave
-import tempfile
+(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime# docker run --gpus all -p 8002:8000 -e ASR_
+BACKEND=nemotron -e MODEL_NAME=nvidia/nemotron-speech-streaming-en-0.6b bu_digital_cx_asr_realtime
 
-import numpy as np
-import soundfile as sf
-import resampy
-import websockets
+==========
+== CUDA ==
+==========
 
-try:
-    import sounddevice as sd
-    HAS_MIC = True
-except Exception:
-    HAS_MIC = False
+CUDA Version 12.4.1
 
-TARGET_SR = 16000
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-CHUNK_MS = 80
-CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
-SLEEP_SEC = CHUNK_MS / 1000.0
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
 
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
 
-# =========================
-# Client-side state
-# =========================
-class ClientState:
-    def __init__(self):
-        self.received_partial = False
-        self.received_final = False
-        self.last_audio_ts = time.time()
+/usr/local/lib/python3.10/dist-packages/torch/cuda/__init__.py:65: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/usr/local/lib/python3.10/dist-packages/transformers/utils/hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:matplotlib.font_manager:generated new fontManager
+[NeMo W 2026-02-03 10:32:24 <frozen importlib:241] Megatron num_microbatches_calculator not found, using Apex version.
+WARNING:nv_one_logger.api.config:OneLogger: Setting error_handling_strategy to DISABLE_QUIETLY_AND_REPORT_METRIC_ERROR for rank (rank=0) with OneLogger disabled. To override: explicitly set error_handling_strategy parameter.
+INFO:nv_one_logger.exporter.export_config_manager:Final configuration contains 0 exporter(s)
+WARNING:nv_one_logger.training_telemetry.api.training_telemetry_provider:No exporters were provided. This means that no telemetry data will be collected.
+ERROR:    Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/torch/_ops.py", line 1442, in load_library
+    ctypes.CDLL(path)
+  File "/usr/lib/python3.10/ctypes/__init__.py", line 374, in __init__
+    self._handle = _dlopen(self._name, mode)
+OSError: /usr/local/lib/python3.10/dist-packages/torchaudio/lib/libtorchaudio.so: undefined symbol: _ZNK5torch8autograd4Node4nameEv
 
+The above exception was the direct cause of the following exception:
 
-# =========================
-# Utilities
-# =========================
-def resample_to_16k(wav_path: str) -> str:
-    audio, sr = sf.read(wav_path, dtype="float32")
-    if audio.ndim > 1:
-        audio = np.mean(audio, axis=1)
-    if sr != TARGET_SR:
-        audio = resampy.resample(audio, sr, TARGET_SR)
-    audio = np.clip(audio, -1.0, 1.0)
-    audio = (audio * 32767).astype(np.int16)
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 694, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 571, in __aenter__
+    await self._router.startup()
+  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 671, in startup
+    await handler()
+  File "/srv/app/main.py", line 28, in startup
+    load_sec = engine.load()
+  File "/srv/app/asr_engines/nemotron_asr.py", line 93, in load
+    import nemo.collections.asr as nemo_asr
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/__init__.py", line 15, in <module>
+    from nemo.collections.asr import data, losses, models, modules
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/models/__init__.py", line 15, in <module>
+    from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/models/aed_multitask_models.py", line 32, in <module>
+    from nemo.collections.asr.metrics import MultiTaskMetric
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/metrics/__init__.py", line 15, in <module>
+    from nemo.collections.asr.metrics.bleu import BLEU
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/metrics/bleu.py", line 24, in <module>
+    from nemo.collections.asr.parts.submodules.multitask_decoding import AbstractMultiTaskDecoding
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/parts/submodules/multitask_decoding.py", line 22, in <module>
+    from nemo.collections.asr.parts.submodules.multitask_beam_decoding import (
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/parts/submodules/multitask_beam_decoding.py", line 22, in <module>
+    from nemo.collections.asr.modules.transformer import (
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/modules/__init__.py", line 15, in <module>
+    from nemo.collections.asr.modules.audio_preprocessing import (
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/modules/audio_preprocessing.py", line 26, in <module>
+    from nemo.collections.audio.parts.utils.transforms import MFCC
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/audio/__init__.py", line 15, in <module>
+    from nemo.collections.audio import data, losses, metrics, models, modules
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/audio/metrics/__init__.py", line 15, in <module>
+    from nemo.collections.audio.metrics.audio import AudioMetricWrapper
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/audio/metrics/audio.py", line 24, in <module>
+    from nemo.collections.audio.metrics.squim import SquimMOSMetric, SquimObjectiveMetric
+  File "/usr/local/lib/python3.10/dist-packages/nemo/collections/audio/metrics/squim.py", line 22, in <module>
+    import torchaudio
+  File "/usr/local/lib/python3.10/dist-packages/torchaudio/__init__.py", line 2, in <module>
+    from . import _extension  # noqa  # usort: skip
+  File "/usr/local/lib/python3.10/dist-packages/torchaudio/_extension/__init__.py", line 38, in <module>
+    _load_lib("libtorchaudio")
+  File "/usr/local/lib/python3.10/dist-packages/torchaudio/_extension/utils.py", line 60, in _load_lib
+    torch.ops.load_library(path)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_ops.py", line 1444, in load_library
+    raise OSError(f"Could not load this library: {path}") from e
+OSError: Could not load this library: /usr/local/lib/python3.10/dist-packages/torchaudio/lib/libtorchaudio.so
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    tmp.close()
-    sf.write(tmp.name, audio, TARGET_SR, subtype="PCM_16")
-    return tmp.name
-
-
-# =========================
-# Receiver
-# =========================
-async def receiver(ws, state: ClientState):
-    finals = []
-
-    while True:
-        try:
-            msg = await ws.recv()
-        except websockets.exceptions.ConnectionClosed:
-            return finals
-
-        obj = json.loads(msg)
-        typ = obj.get("type")
-
-        if typ == "partial":
-            state.received_partial = True
-            txt = obj.get("text", "").replace("\n", " ")
-            sys.stdout.write("\r[PARTIAL] " + txt[:160] + " " * 20)
-            sys.stdout.flush()
-
-        elif typ == "final":
-            state.received_final = True
-            txt = (obj.get("text") or "").strip()
-            print("\n[FINAL]", txt)
-            finals.append(txt)
-
-            print("[SERVER_METRICS]",
-                  f"reason={obj.get('reason')}",
-                  f"ttft_ms={obj.get('ttft_ms')}",
-                  f"ttf_ms={obj.get('ttf_ms')}",
-                  f"audio_ms={obj.get('audio_ms')}",
-                  f"rtf={obj.get('rtf')}",
-                  f"chunks={obj.get('chunks')}",
-                  f"preproc_ms={obj.get('model_preproc_ms')}",
-                  f"infer_ms={obj.get('model_infer_ms')}",
-                  f"flush_ms={obj.get('model_flush_ms')}",
-                  )
-
-
-# =========================
-# Whisper UX status loop
-# =========================
-async def whisper_status_loop(state: ClientState):
-    """
-    Shows 'Transcribing…' ONLY when:
-    - No partials are coming (Whisper)
-    - Audio has stopped recently
-    - Final has not arrived yet
-    """
-    while not state.received_final:
-        await asyncio.sleep(0.3)
-
-        if not state.received_partial:
-            idle = time.time() - state.last_audio_ts
-            if idle > 0.6:
-                sys.stdout.write("\r[WHISPER] ⏳ Transcribing… please wait   ")
-                sys.stdout.flush()
-
-
-# =========================
-# WAV sender
-# =========================
-async def run_wav(ws, wav_path: str, realtime: bool, state: ClientState):
-    with wave.open(wav_path, "rb") as wf:
-        while True:
-            data = wf.readframes(CHUNK_FRAMES)
-            if not data:
-                break
-            await ws.send(data)
-            state.last_audio_ts = time.time()
-            if realtime:
-                await asyncio.sleep(SLEEP_SEC)
-
-    await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
-    await asyncio.sleep(0.8)
-    await ws.send(b"")
-
-
-# =========================
-# Mic sender
-# =========================
-async def run_mic(ws, state: ClientState):
-    if not HAS_MIC:
-        raise RuntimeError("sounddevice not installed. pip install sounddevice")
-
-    loop = asyncio.get_running_loop()
-    q: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
-
-    def cb(indata, frames, t, status):
-        loop.call_soon_threadsafe(q.put_nowait, indata.copy())
-
-    stream = sd.InputStream(
-        samplerate=TARGET_SR,
-        channels=1,
-        dtype="int16",
-        blocksize=CHUNK_FRAMES,
-        callback=cb,
-    )
-    stream.start()
-
-    print("🎤 Speak freely. Pause to end sentences. Ctrl+C to exit.")
-
-    async def sender():
-        while True:
-            blk = await q.get()
-            if blk is None:
-                return
-            try:
-                await ws.send(blk.tobytes())
-                state.last_audio_ts = time.time()
-            except websockets.exceptions.ConnectionClosed:
-                return
-
-    send_task = asyncio.create_task(sender())
-
-    try:
-        while True:
-            await asyncio.sleep(0.25)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        stream.stop()
-        stream.close()
-        try:
-            await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
-            await asyncio.sleep(0.8)
-            await ws.send(b"")
-        except Exception:
-            pass
-
-        await q.put(None)
-        await send_task
-
-
-# =========================
-# Main
-# =========================
-async def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--url", default="ws://127.0.0.1:8000/ws/asr")
-    p.add_argument("--wav", help="Path to wav file")
-    p.add_argument("--mic", action="store_true")
-    p.add_argument("--fast", action="store_true")
-    args = p.parse_args()
-
-    state = ClientState()
-    start = time.time()
-
-    async with websockets.connect(args.url, max_size=None) as ws:
-        print(f"[INFO] Connected to {args.url}")
-
-        recv_task = asyncio.create_task(receiver(ws, state))
-        status_task = asyncio.create_task(whisper_status_loop(state))
-
-        if args.mic:
-            await run_mic(ws, state)
-        else:
-            if not args.wav:
-                raise ValueError("--wav required unless --mic is set")
-
-            wav = args.wav
-            cleanup = None
-            with wave.open(wav, "rb") as wf:
-                sr, ch, sw = wf.getframerate(), wf.getnchannels(), wf.getsampwidth()
-            if sr != TARGET_SR or ch != 1 or sw != 2:
-                print(f"[INFO] Resampling WAV → 16kHz mono PCM16")
-                wav = resample_to_16k(wav)
-                cleanup = wav
-
-            await run_wav(ws, wav, realtime=not args.fast, state=state)
-
-            if cleanup:
-                os.unlink(cleanup)
-
-        finals = await recv_task
-        status_task.cancel()
-
-    print("\nFULL TRANSCRIPT:")
-    print(" ".join([t for t in finals if t.strip()]))
-
-    print("\nCLIENT METRICS:")
-    print(f"Total wall time: {time.time() - start:.2f}s")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+ERROR:    Application startup failed. Exiting.

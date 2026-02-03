@@ -1,48 +1,317 @@
-(client_env) PS C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts> python .\ws_client.py --mic
-[INFO] Connected to ws://127.0.0.1:8000/ws/asr
-🎤 Speak freely. Pause to end sentences. Ctrl+C to exit.
+import asyncio
+import json
+import time
+import logging
 
-[FINAL] Hello, this is Mike testing and I'm testing ASR and I want to check if it is giving me the proper response or not.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=9144 audio_ms=8940 rtf=0.02881938902040323 chunks=1 preproc_ms=9 infer_ms=248 flush_ms=0
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-[FINAL] and I can see that it is not flushing.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=3452 audio_ms=3300 rtf=0.13095486034272297 chunks=2 preproc_ms=13 infer_ms=418 flush_ms=0
+from app.config import load_config
+from app.metrics import *
+from app.vad import AdaptiveEnergyVAD
+from app.factory import build_engine
+from app.asr_engines.base import ASREngine
 
-[FINAL] on small pauses.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=2532 audio_ms=2480 rtf=0.23376639151284773 chunks=3 preproc_ms=17 infer_ms=561 flush_ms=0
+cfg = load_config()
+logging.basicConfig(level=cfg.log_level)
+log = logging.getLogger("asr_server")
 
-[FINAL] So I want to check that if it would flush or not.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=9008 audio_ms=8760 rtf=0.08726169846390616 chunks=4 preproc_ms=23 infer_ms=740 flush_ms=0
+app = FastAPI()
+engine: ASREngine | None = None
 
-[FINAL] The audios are not flushing on a small pause.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=4020 audio_ms=3920 rtf=0.2411654575404768 chunks=5 preproc_ms=29 infer_ms=916 flush_ms=0
 
-[FINAL] Вайсу.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=1510 audio_ms=1400 rtf=0.7814227620006673 chunks=6 preproc_ms=34 infer_ms=1059 flush_ms=0
+@app.on_event("startup")
+async def startup():
+    global engine
+    engine = build_engine(cfg)
+    load_sec = engine.load()
+    log.info(
+        f"ASR backend={cfg.asr_backend} "
+        f"model={cfg.model_name} "
+        f"loaded in {load_sec:.2f}s"
+    )
 
-[FINAL] I want to check why the audios are not flashing on smallpox.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=7311 audio_ms=7120 rtf=0.1806757780409345 chunks=7 preproc_ms=39 infer_ms=1246 flush_ms=0
 
-[FINAL] The thing is I'm checking that if the ASR is working that whisper is working or not and I cannot see that the whisper is transcribing kind of script.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=14091 audio_ms=13940 rtf=0.1124943309921873 chunks=8 preproc_ms=45 infer_ms=1522 flush_ms=0
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
-[FINAL] Thank you.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=1177 audio_ms=1080 rtf=1.5818895664307528 chunks=9 preproc_ms=50 infer_ms=1657 flush_ms=0
 
-[FINAL] Bye.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=1022 audio_ms=960 rtf=1.9211077873478644 chunks=10 preproc_ms=56 infer_ms=1787 flush_ms=0
+@app.websocket("/ws/asr")
+async def ws_asr(ws: WebSocket):
+    assert engine is not None
+    await ws.accept()
 
-[FINAL] Thank you.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=1104 audio_ms=960 rtf=2.0673889938431484 chunks=11 preproc_ms=61 infer_ms=1922 flush_ms=0
+    # ===========================
+    # 🔑 PROMETHEUS LABEL BINDING
+    # ===========================
+    labels = (cfg.asr_backend, cfg.model_name)
 
-[FINAL] Thank you.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=1340 audio_ms=1240 rtf=1.7143696775629875 chunks=12 preproc_ms=67 infer_ms=2058 flush_ms=0
+    active_streams = ACTIVE_STREAMS.labels(*labels)
+    partials_total = PARTIALS_TOTAL.labels(*labels)
+    finals_total = FINALS_TOTAL.labels(*labels)
+    utterances_total = UTTERANCES_TOTAL.labels(*labels)
 
-[FINAL] Það er hann.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=1043 audio_ms=920 rtf=2.4876687635222208 chunks=13 preproc_ms=73 infer_ms=2215 flush_ms=0
+    ttft_wall = TTFT_WALL.labels(*labels)
+    ttf_wall = TTF_WALL.labels(*labels)
 
-[FINAL] Thank you.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=1103 audio_ms=980 rtf=2.4791677553700855 chunks=14 preproc_ms=78 infer_ms=2350 flush_ms=0
+    infer_sec = INFER_SEC.labels(*labels)
+    preproc_sec = PREPROC_SEC.labels(*labels)
+    flush_sec = FLUSH_SEC.labels(*labels)
 
-[FINAL] Thank you.
-[SERVER_METRICS] reason=silence ttft_ms=None ttf_ms=1181 audio_ms=1040 rtf=2.4717707966024487 chunks=15 preproc_ms=84 infer_ms=2485 flush_ms=0
+    audio_sec_hist = AUDIO_SEC.labels(*labels)
+    rtf_hist = RTF.labels(*labels)
+    backlog_ms_gauge = BACKLOG_MS.labels(*labels)
+
+    active_streams.inc()
+    log.info(f"WS connected: {ws.client}")
+
+    vad = AdaptiveEnergyVAD(
+        cfg.sample_rate,
+        cfg.vad_frame_ms,
+        cfg.vad_start_margin,
+        cfg.vad_min_noise_rms,
+        cfg.pre_speech_ms,
+    )
+
+    session = engine.new_session(max_buffer_ms=cfg.max_utt_ms)
+
+    frame_bytes = int(cfg.sample_rate * cfg.vad_frame_ms / 1000) * 2
+    raw_buf = bytearray()
+
+    utt_started = False
+    utt_audio_ms = 0
+    t_utt_start = None
+    t_first_partial = None
+    silence_ms = 0
+
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+
+            data = msg.get("bytes")
+            if data is None:
+                continue
+
+            # EOS
+            if data == b"":
+                if utt_started:
+                    final = session.finalize(cfg.post_speech_pad_ms)
+                    await _emit_final(
+                        ws,
+                        session,
+                        final,
+                        utt_audio_ms,
+                        t_utt_start,
+                        t_first_partial,
+                        reason="eos",
+                        utterances_total=utterances_total,
+                        finals_total=finals_total,
+                        ttf_wall=ttf_wall,
+                        audio_sec_hist=audio_sec_hist,
+                        rtf_hist=rtf_hist,
+                    )
+                break
+
+            raw_buf.extend(data)
+
+            while len(raw_buf) >= frame_bytes:
+                frame = bytes(raw_buf[:frame_bytes])
+                del raw_buf[:frame_bytes]
+
+                is_speech, pre = vad.push_frame(frame)
+
+                silence_ms = 0 if is_speech else silence_ms + cfg.vad_frame_ms
+
+                # ---- utterance start ----
+                if pre and not utt_started:
+                    utt_started = True
+                    utt_audio_ms = 0
+                    t_utt_start = time.time()
+                    t_first_partial = None
+                    silence_ms = 0
+                    session.accept_pcm16(pre)
+
+                    # ===============================
+                    # ✅ ADD (Whisper UX): show buffering while user speaks
+                    # ===============================
+                    if cfg.asr_backend == "whisper":
+                        await ws.send_text(json.dumps({
+                            "type": "status",
+                            "state": "buffering"
+                        }))
+
+                if not utt_started:
+                    continue
+
+                session.accept_pcm16(frame)
+                utt_audio_ms += cfg.vad_frame_ms
+                backlog_ms_gauge.set(session.backlog_ms() if hasattr(session, "backlog_ms") else 0)
+
+                # ---- partials ----
+                if engine.caps.partials:
+                    text = session.step_if_ready()
+                    if text:
+                        partials_total.inc()
+                        if t_first_partial is None:
+                            t_first_partial = time.time()
+                            if engine.caps.ttft_meaningful:
+                                ttft_wall.observe(t_first_partial - t_utt_start)
+                        await ws.send_text(json.dumps({"type": "partial", "text": text}))
+
+                # ==========================================================
+                # ✅ ADD: WHISPER SHORT-PAUSE EARLY FLUSH (Nemotron unaffected)
+                # Put this BEFORE the common endpoint block below.
+                # ==========================================================
+                if (
+                    cfg.asr_backend == "whisper"
+                    and cfg.backend_params is not None
+                    and not is_speech
+                    and utt_started
+                    and utt_audio_ms >= cfg.min_utt_ms
+                    and silence_ms >= cfg.backend_params.short_pause_flush_ms
+                    and silence_ms < cfg.end_silence_ms
+                ):
+                    # Notify client: we're about to run batch decode now
+                    await ws.send_text(json.dumps({
+                        "type": "status",
+                        "state": "transcribing"
+                    }))
+
+                    final = session.finalize(cfg.post_speech_pad_ms)
+                    await _emit_final(
+                        ws,
+                        session,
+                        final,
+                        utt_audio_ms,
+                        t_utt_start,
+                        t_first_partial,
+                        reason="short_pause",
+                        utterances_total=utterances_total,
+                        finals_total=finals_total,
+                        ttf_wall=ttf_wall,
+                        audio_sec_hist=audio_sec_hist,
+                        rtf_hist=rtf_hist,
+                    )
+                    vad.reset()
+                    utt_started = False
+                    utt_audio_ms = 0
+                    silence_ms = 0
+                    continue
+
+                # ---- endpoint ---- (COMMON: Nemotron + Whisper)
+                if (
+                    not is_speech
+                    and utt_audio_ms >= cfg.min_utt_ms
+                    and silence_ms >= cfg.end_silence_ms
+                ):
+                    # (Optional UX) you can also send transcribing here for whisper
+                    if cfg.asr_backend == "whisper":
+                        await ws.send_text(json.dumps({
+                            "type": "status",
+                            "state": "transcribing"
+                        }))
+
+                    final = session.finalize(cfg.post_speech_pad_ms)
+                    await _emit_final(
+                        ws,
+                        session,
+                        final,
+                        utt_audio_ms,
+                        t_utt_start,
+                        t_first_partial,
+                        reason="silence",
+                        utterances_total=utterances_total,
+                        finals_total=finals_total,
+                        ttf_wall=ttf_wall,
+                        audio_sec_hist=audio_sec_hist,
+                        rtf_hist=rtf_hist,
+                    )
+                    vad.reset()
+                    utt_started = False
+                    utt_audio_ms = 0
+                    silence_ms = 0
+
+                elif utt_audio_ms >= cfg.max_utt_ms:
+                    final = session.finalize(cfg.post_speech_pad_ms)
+                    await _emit_final(
+                        ws,
+                        session,
+                        final,
+                        utt_audio_ms,
+                        t_utt_start,
+                        t_first_partial,
+                        reason="max_utt",
+                        utterances_total=utterances_total,
+                        finals_total=finals_total,
+                        ttf_wall=ttf_wall,
+                        audio_sec_hist=audio_sec_hist,
+                        rtf_hist=rtf_hist,
+                    )
+                    vad.reset()
+                    utt_started = False
+                    utt_audio_ms = 0
+                    silence_ms = 0
+
+    finally:
+        active_streams.dec()
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        log.info("WS disconnected")
+
+
+async def _emit_final(
+    ws: WebSocket,
+    session,
+    final_text: str,
+    audio_ms: int,
+    t_start: float,
+    t_first_partial: float | None,
+    reason: str,
+    *,
+    utterances_total,
+    finals_total,
+    ttf_wall,
+    audio_sec_hist,
+    rtf_hist,
+):
+    if not final_text:
+        return
+
+    utterances_total.inc()
+    finals_total.inc()
+
+    audio_sec = audio_ms / 1000.0
+    ttf = time.time() - t_start if t_start else 0.0
+
+    ttf_wall.observe(ttf)
+    audio_sec_hist.observe(audio_sec)
+
+    compute_sec = session.utt_preproc + session.utt_infer + session.utt_flush
+    if audio_sec > 0:
+        rtf_hist.observe(compute_sec / audio_sec)
+
+    payload = {
+        "type": "final",
+        "text": final_text,
+        "reason": reason,
+        "audio_ms": audio_ms,
+        "ttf_ms": int(ttf * 1000),
+        "ttft_ms": (
+            int((t_first_partial - t_start) * 1000)
+            if t_first_partial and engine.caps.ttft_meaningful
+            else None
+        ),
+        "chunks": session.chunks,
+        "model_preproc_ms": int(session.utt_preproc * 1000),
+        "model_infer_ms": int(session.utt_infer * 1000),
+        "model_flush_ms": int(session.utt_flush * 1000),
+        "rtf": (compute_sec / audio_sec) if audio_sec > 0 else None,
+    }
+
+    await ws.send_text(json.dumps(payload))

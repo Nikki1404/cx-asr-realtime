@@ -1,5 +1,3 @@
-(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav#  docker run --gpus all -p 8000:8000 -e ASR_BACKEND=whisper -e MODEL_NAME=openai/whisper-large-v3-turbo cx-asr-realtime
-
 ==========
 == CUDA ==
 ==========
@@ -51,6 +49,3 @@ Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runt
 CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
 For debugging consider passing CUDA_LAUNCH_BLOCKING=1
 Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
-
-
-ERROR:    Application startup failed. Exiting.

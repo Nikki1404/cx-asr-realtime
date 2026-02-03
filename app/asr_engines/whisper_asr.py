@@ -35,21 +35,20 @@ class WhisperTurboASR(ASREngine):
 
     def load(self) -> float:
         """
-        Load Whisper model + processor.
+        Load Whisper model + processor (GPU-only, OOM-safe).
         """
         t0 = time.time()
 
         self.processor = AutoProcessor.from_pretrained(self.model_name)
+
+        # ✅ CRITICAL FIX:
+        # Use Accelerate device_map to avoid GPU OOM at load time
         self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
             self.model_name,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            device_map="cuda",   # prevents full cuda() allocation spike
+            load_in_8bit=True, 
             low_cpu_mem_usage=True,
         )
-
-        if self.device == "cuda":
-            self.model = self.model.cuda()
-        else:
-            self.model = self.model.cpu()
 
         self.model.eval()
 
@@ -71,7 +70,7 @@ class WhisperTurboASR(ASREngine):
                 return_tensors="pt",
             )
 
-            # ✅ FIX (only change): match model dtype
+            # Ensure inputs match model dtype/device
             inputs = {
                 k: v.to(
                     device=self.model.device,
@@ -151,7 +150,7 @@ class WhisperSession:
         )
         self.utt_preproc += (time.perf_counter() - t0)
 
-        # ✅ FIX (only change): match model dtype
+        # Match model dtype/device
         inputs = {
             k: v.to(
                 device=self.engine.model.device,
@@ -164,7 +163,7 @@ class WhisperSession:
         t1 = time.perf_counter()
         generated_ids = self.engine.model.generate(
             **inputs,
-            max_new_tokens=448,
+            max_new_tokens=444,   # safe w.r.t Whisper decoder length
         )
         self.utt_infer += (time.perf_counter() - t1)
 

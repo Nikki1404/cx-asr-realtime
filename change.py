@@ -1,4 +1,4 @@
-(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav#  docker run --gpus all -p 8000:8000 -e ASR_BACKEND=whisper -e MODEL_NAME=openai/whisper-large-v3-turbo bu_digital_cx_asr_realtime
+(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime#  docker run --gpus all -p 8000:8000 -e ASR_BACKEND=whisper -e MODEL_NAME=openai/whisper-large-v3-turbo bu_digital_cx_asr_realtime
 
 ==========
 == CUDA ==
@@ -20,7 +20,7 @@ A copy of this license is made available in this container at /NGC-DL-CONTAINER-
   warnings.warn(
 INFO:     Started server process [1]
 INFO:     Waiting for application startup.
-`torch_dtype` is deprecated! Use `dtype` instead!
+The `load_in_4bit` and `load_in_8bit` arguments are deprecated and will be removed in the future versions. Please, pass a `BitsAndBytesConfig` object in `quantization_config` argument instead.
 ERROR:    Traceback (most recent call last):
   File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 694, in lifespan
     async with self.lifespan_context(app) as maybe_state:
@@ -30,28 +30,16 @@ ERROR:    Traceback (most recent call last):
     await handler()
   File "/srv/app/main.py", line 28, in startup
     load_sec = engine.load()
-  File "/srv/app/asr_engines/whisper_asr.py", line 50, in load
-    self.model = self.model.cuda()
-  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 4276, in cuda
-    return super().cuda(*args, **kwargs)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1093, in cuda
-    return self._apply(lambda t: t.cuda(device))
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 933, in _apply
-    module._apply(fn)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 933, in _apply
-    module._apply(fn)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 933, in _apply
-    module._apply(fn)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 964, in _apply
-    param_applied = fn(param)
-  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1093, in <lambda>
-    return self._apply(lambda t: t.cuda(device))
-torch.AcceleratorError: CUDA error: out of memory
-Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
-CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
-For debugging consider passing CUDA_LAUNCH_BLOCKING=1
-Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
-
-
-ERROR:    Application startup failed. Exiting.
-(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav#
+  File "/srv/app/asr_engines/whisper_asr.py", line 46, in load
+    self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/auto/auto_factory.py", line 604, in from_pretrained
+    return model_class.from_pretrained(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 277, in _wrapper
+    return func(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 4881, in from_pretrained
+    hf_quantizer, config, dtype, device_map = get_hf_quantizer(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/quantizers/auto.py", line 319, in get_hf_quantizer
+    hf_quantizer.validate_environment(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/quantizers/quantizer_bnb_8bit.py", line 73, in validate_environment
+    raise ImportError(
+ImportError: Using `bitsandbytes` 8-bit quantization requires the latest version of bitsandbytes: `pip install -U bitsandbytes`

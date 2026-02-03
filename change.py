@@ -1,182 +1,97 @@
-import time
-from typing import Optional
+(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime# docker run --gpus all -p 8000:8000 -e ASR_BACKEND=whisper -e MODEL_NAME=openai/whisper-large-v3-turbo bu_digital_cx_asr_realtime
 
-import numpy as np
-import torch
-from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
+==========
+== CUDA ==
+==========
 
-from app.asr_engines.base import ASREngine, EngineCaps
+CUDA Version 12.4.1
 
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-class WhisperTurboASR(ASREngine):
-    """
-    Chunked (non-streaming) ASR using Whisper Turbo.
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
 
-    IMPORTANT:
-    - Whisper is NOT a true streaming ASR.
-    - No partials.
-    - No meaningful TTFT.
-    - Final transcription only.
-    """
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
 
-    caps = EngineCaps(
-        streaming=False,
-        partials=False,
-        ttft_meaningful=False,
-    )
-
-    def __init__(self, model_name: str, device: str, sample_rate: int):
-        self.model_name = model_name
-        self.device = device
-        self.sr = sample_rate
-
-        self.model = None
-        self.processor = None
-
-    def load(self) -> float:
-        """
-        Load Whisper model + processor.
-        """
-        t0 = time.time()
-
-        self.processor = AutoProcessor.from_pretrained(self.model_name)
-        self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            self.model_name,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-            low_cpu_mem_usage=True,
-        )
-
-        if self.device == "cuda":
-            self.model = self.model.cuda()
-        else:
-            self.model = self.model.cpu()
-
-        self.model.eval()
-
-        # Warmup (important to avoid first-request latency spike)
-        self._warmup()
-
-        return time.time() - t0
-
-    @torch.inference_mode()
-    def _warmup(self):
-        """
-        Warm up with ~1s of silence.
-        """
-        try:
-            silence = np.zeros(int(self.sr * 1.0), dtype=np.float32)
-            inputs = self.processor(
-                silence,
-                sampling_rate=self.sr,
-                return_tensors="pt",
-            )
-
-            # ✅ FIX (only change): match model dtype
-            inputs = {
-                k: v.to(
-                    device=self.model.device,
-                    dtype=self.model.dtype
-                )
-                for k, v in inputs.items()
-            }
-
-            _ = self.model.generate(**inputs)
-        except Exception:
-            # Warmup must never crash startup
-            pass
-
-    def new_session(self, max_buffer_ms: int):
-        return WhisperSession(self, max_buffer_ms=max_buffer_ms)
+Traceback (most recent call last):
+  File "/srv/scripts/run_server.py", line 25, in <module>
+    main()
+  File "/srv/scripts/run_server.py", line 16, in main
+    uvicorn.run(
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/main.py", line 594, in run
+    server.run()
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/server.py", line 67, in run
+    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/_compat.py", line 60, in asyncio_run
+    return loop.run_until_complete(main)
+  File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/server.py", line 71, in serve
+    await self._serve(sockets)
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/server.py", line 78, in _serve
+    config.load()
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/config.py", line 439, in load
+    self.loaded_app = import_from_string(self.app)
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/importer.py", line 22, in import_from_string
+    raise exc from None
+  File "/usr/local/lib/python3.10/dist-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+  File "/usr/lib/python3.10/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "<frozen importlib._bootstrap>", line 1050, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1027, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 992, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1050, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1027, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1004, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'app'
 
 
-class WhisperSession:
-    """
-    Per-utterance session for Whisper.
+getting this for this Dockerfile 
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
-    Behavior:
-    - Buffers audio until finalize()
-    - No partial outputs
-    - Single forward pass on finalize
-    """
+ENV https_proxy="http://163.116.128.80:8080"
+ENV http_proxy="http://163.116.128.80:8080"
 
-    def __init__(self, engine: WhisperTurboASR, max_buffer_ms: int):
-        self.engine = engine
-        self.max_buffer_samples = int(engine.sr * (max_buffer_ms / 1000.0))
+WORKDIR /srv
 
-        # audio buffer (float32)
-        self.audio = np.array([], dtype=np.float32)
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/srv/hf_cache \
+    TRANSFORMERS_CACHE=/srv/hf_cache \
+    TORCH_HOME=/srv/hf_cache
 
-        # timing accumulators (kept for consistency with metrics)
-        self.utt_preproc = 0.0
-        self.utt_infer = 0.0
-        self.utt_flush = 0.0
-        self.chunks = 0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    git \
+    ffmpeg \
+    build-essential \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
 
-    def accept_pcm16(self, pcm16: bytes):
-        """
-        Append PCM16 audio to buffer.
-        """
-        x = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
-        self.audio = np.concatenate([self.audio, x])
+RUN python3 -m pip install --no-cache-dir -U pip setuptools wheel
 
-        # bound buffer
-        if len(self.audio) > self.max_buffer_samples:
-            self.audio = self.audio[-self.max_buffer_samples:]
+# Torch (CUDA 12.4)
+RUN python3 -m pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cu124 \
+    torch==2.5.1 \
+    torchaudio==2.5.1
 
-    def step_if_ready(self) -> Optional[str]:
-        """
-        Whisper does NOT support partials.
-        Always return None.
-        """
-        return None
+COPY requirements.txt /srv/requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /srv/requirements.txt
 
-    @torch.inference_mode()
-    def finalize(self, pad_ms: int) -> str:
-        """
-        Run full Whisper transcription.
-        """
-        if len(self.audio) == 0:
-            return ""
+# NeMo for Nemotron
+RUN python3 -m pip install --no-cache-dir \
+    "git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]"
 
-        # pad to avoid clipping last word
-        pad = np.zeros(int(self.engine.sr * (pad_ms / 1000.0)), dtype=np.float32)
-        audio = np.concatenate([self.audio, pad])
+COPY app /srv/app
+COPY scripts /srv/scripts
 
-        # preprocess
-        t0 = time.perf_counter()
-        inputs = self.engine.processor(
-            audio,
-            sampling_rate=self.engine.sr,
-            return_tensors="pt",
-        )
-        self.utt_preproc += (time.perf_counter() - t0)
+EXPOSE 8000
 
-        # ✅ FIX (only change): match model dtype
-        inputs = {
-            k: v.to(
-                device=self.engine.model.device,
-                dtype=self.engine.model.dtype
-            )
-            for k, v in inputs.items()
-        }
-
-        # inference
-        t1 = time.perf_counter()
-        generated_ids = self.engine.model.generate(
-            **inputs,
-            max_new_tokens=444,
-        )
-        self.utt_infer += (time.perf_counter() - t1)
-
-        self.chunks += 1
-
-        # decode
-        text = self.engine.processor.batch_decode(
-            generated_ids,
-            skip_special_tokens=True,
-        )[0].strip()
-
-        # reset buffer for next utterance
-        self.audio = np.array([], dtype=np.float32)
-
-        return text
+# Backend set at runtime (ENV or CLI)
+CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

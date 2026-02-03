@@ -71,7 +71,7 @@ class WhisperTurboASR(ASREngine):
                 return_tensors="pt",
             )
 
-            # ✅ FIX (only change): match model dtype
+            #  FIX (only change): match model dtype
             inputs = {
                 k: v.to(
                     device=self.model.device,
@@ -151,7 +151,7 @@ class WhisperSession:
         )
         self.utt_preproc += (time.perf_counter() - t0)
 
-        # ✅ FIX (only change): match model dtype
+        #  FIX (only change): match model dtype
         inputs = {
             k: v.to(
                 device=self.engine.model.device,
@@ -164,7 +164,7 @@ class WhisperSession:
         t1 = time.perf_counter()
         generated_ids = self.engine.model.generate(
             **inputs,
-            max_new_tokens=448,
+            max_new_tokens=444,
         )
         self.utt_infer += (time.perf_counter() - t1)
 

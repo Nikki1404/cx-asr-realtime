@@ -11,14 +11,6 @@ from app.asr_engines.base import ASREngine, EngineCaps
 
 class WhisperTurboASR(ASREngine):
     """
-    Chunked (non-streaming) ASR using Whisper Turbo.
-
-    IMPORTANT:
-    - Whisper is NOT a true streaming ASR.
-    - No partials.
-    - No meaningful TTFT.
-    - Final transcription only.
-
     Production notes:
     - GPU-only
     - OOM-safe model loading using device_map="cuda"
@@ -49,10 +41,8 @@ class WhisperTurboASR(ASREngine):
             raise RuntimeError("WhisperTurboASR is configured as GPU-only. Set DEVICE=cuda.")
 
         self.processor = AutoProcessor.from_pretrained(self.model_name)
-
-        # ----------------------------
+        
         # Optional quantization knobs
-        # ----------------------------
         # Set one of:
         #   WHISPER_LOAD_IN_8BIT=1
         #   WHISPER_LOAD_IN_4BIT=1
@@ -113,7 +103,7 @@ class WhisperTurboASR(ASREngine):
                 return_tensors="pt",
             )
 
-            # ✅ Ensure inputs match model dtype/device
+            #  Ensure inputs match model dtype/device
             inputs = {
                 k: v.to(device=self.model.device, dtype=self.model.dtype)
                 for k, v in inputs.items()
@@ -191,7 +181,7 @@ class WhisperSession:
         )
         self.utt_preproc += (time.perf_counter() - t0)
 
-        # ✅ Match model dtype/device
+        # Match model dtype/device
         inputs = {
             k: v.to(device=self.engine.model.device, dtype=self.engine.model.dtype)
             for k, v in inputs.items()
@@ -200,7 +190,7 @@ class WhisperSession:
         # inference
         t1 = time.perf_counter()
 
-        # ✅ FIX: avoid max_new_tokens overflow for Whisper
+        #  FIX: avoid max_new_tokens overflow for Whisper
         # decoder_input_ids already consumes some space; 444 is safe for max_target_positions=448.
         generated_ids = self.engine.model.generate(
             **inputs,

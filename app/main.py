@@ -28,15 +28,15 @@ def get_engine(backend: str) -> ASREngine:
         return ENGINE_CACHE[backend]
 
     tmp_cfg = Config()
-    tmp_cfg.asr_backend = backend
-    tmp_cfg.model_name = ""
-    tmp_cfg.device = cfg.device
-    tmp_cfg.sample_rate = cfg.sample_rate
-    tmp_cfg.context_right = cfg.context_right
+    object.__setattr__(tmp_cfg, 'asr_backend', backend)
+    object.__setattr__(tmp_cfg, 'model_name', cfg.model_name)  # FIXED: Use global cfg.model_name
+    object.__setattr__(tmp_cfg, 'device', cfg.device)
+    object.__setattr__(tmp_cfg, 'sample_rate', cfg.sample_rate)
+    object.__setattr__(tmp_cfg, 'context_right', cfg.context_right)
 
     engine = build_engine(tmp_cfg)
     load_sec = engine.load()
-    log.info(f"Loaded backend={backend} in {load_sec:.2f}s")
+    log.info(f"Loaded backend={backend} model={tmp_cfg.model_name} in {load_sec:.2f}s")
 
     ENGINE_CACHE[backend] = engine
     return engine

@@ -1,5 +1,5 @@
-app/asr_engines-
-app/asr_engines/base.py-
+#app/asr_engines-
+#app/asr_engines/base.py-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -41,7 +41,7 @@ class ASREngine(ABC):
     @abstractmethod
     def new_session(self, max_buffer_ms: int) -> ASRSession:
         ...
-app/asr_engines/nemotron_asr.py-
+# app/asr_engines/nemotron_asr.py-
 import time
 from dataclasses import dataclass
 from typing import Optional, Any, Tuple
@@ -416,7 +416,7 @@ class StreamingSession:
         # hard reset state (fresh caches)
         self.reset_stream_state()
         return final
-app/asr_engines/whisper_asr.py-
+# app/asr_engines/whisper_asr.py-
 import time
 from typing import Optional
 
@@ -599,7 +599,7 @@ class WhisperSession:
         self.audio = np.array([], dtype=np.float32)
 
         return text
-app/config.py-
+# app/config.py-
 from dataclasses import dataclass
 import os
 
@@ -676,7 +676,7 @@ def load_config() -> Config:
 
     return cfg
   
-app/endpointing.py-
+# app/endpointing.py-
 class Endpointing:
     def __init__(self, end_silence_ms: int, min_utt_ms: int, max_utt_ms: int):
         self.end_silence_ms = end_silence_ms
@@ -701,7 +701,7 @@ class Endpointing:
 
         return False
 
-app/factory.py-
+# app/factory.py-
 from app.config import Config
 from app.asr_engines.nemotron_asr import NemotronStreamingASR
 from app.asr_engines.whisper_asr import WhisperTurboASR

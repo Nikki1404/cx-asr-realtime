@@ -245,5 +245,3 @@ async def _emit_final(
         "model_flush_ms": int(session.utt_flush * 1000),
         "rtf": (compute_sec / audio_sec) if audio_sec > 0 else None,
     }))
-
-

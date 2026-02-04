@@ -1,72 +1,199 @@
-Run 'docker run --help' for more information
-(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime_updated# docker run --gpus all -p 8002:8002 cx_asr_realtime
+import asyncio
+import argparse
+import json
+import os
+import sys
+import time
+import wave
+import tempfile
 
-==========
-== CUDA ==
-==========
+import numpy as np
+import soundfile as sf
+import resampy
+import websockets
 
-CUDA Version 12.4.1
+try:
+    import sounddevice as sd
+    HAS_MIC = True
+except Exception:
+    HAS_MIC = False
 
-Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+TARGET_SR = 16000
 
-This container image and its contents are governed by the NVIDIA Deep Learning Container License.
-By pulling and using the container, you accept the terms and conditions of this license:
-https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+CHUNK_MS = 80
+CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
+SLEEP_SEC = CHUNK_MS / 1000.0
 
-A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+# ---- Whisper UX state ----
+last_audio_time = 0.0
+is_whisper = False
 
-/usr/local/lib/python3.10/dist-packages/torch/cuda/__init__.py:65: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
-  import pynvml  # type: ignore[import]
-/usr/local/lib/python3.10/dist-packages/transformers/utils/hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
-  warnings.warn(
-INFO:     Started server process [1]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
-INFO:     172.17.0.1:33286 - "WebSocket /ws/asr" [accepted]
-INFO:     connection open
-ERROR:    Exception in ASGI application
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.10/dist-packages/uvicorn/protocols/websockets/websockets_impl.py", line 244, in run_asgi
-    result = await self.app(self.scope, self.asgi_receive, self.asgi_send)  # type: ignore[func-returns-value]
-  File "/usr/local/lib/python3.10/dist-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
-    return await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/applications.py", line 1135, in __call__
-    await super().__call__(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/applications.py", line 107, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/errors.py", line 151, in __call__
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/middleware/exceptions.py", line 63, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
-    raise exc
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
-    await app(scope, receive, sender)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 716, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 736, in app
-    await route.handle(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/routing.py", line 364, in handle
-    await self.app(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 141, in app
-    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 53, in wrapped_app
-    raise exc
-  File "/usr/local/lib/python3.10/dist-packages/starlette/_exception_handler.py", line 42, in wrapped_app
-    await app(scope, receive, sender)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 138, in app
-    await func(session)
-  File "/usr/local/lib/python3.10/dist-packages/fastapi/routing.py", line 438, in app
-    await dependant.call(**solved_result.values)
-  File "/srv/app/main.py", line 63, in ws_asr
-    engine = get_engine(backend)
-  File "/srv/app/main.py", line 38, in get_engine
-    load_sec = engine.load()
-  File "/srv/app/asr_engines/whisper_asr.py", line 42, in load
-    self.processor = AutoProcessor.from_pretrained(self.model_name)
-  File "/usr/local/lib/python3.10/dist-packages/transformers/models/auto/processing_auto.py", line 424, in from_pretrained
-    raise ValueError(
-ValueError: Unrecognized processing class in nvidia/nemotron-speech-streaming-en-0.6b. Can't instantiate a processor, a tokenizer, an image processor or a feature extractor for this model. Make sure the repository contains the files of at least one of those processing classes.
+
+# =========================
+# 🔹 BACKEND SELECTION UI
+# =========================
+def choose_backend() -> str:
+    print("\nChoose ASR backend:")
+    print("  1) Nemotron (true streaming, partials)")
+    print("  2) Whisper Turbo (batch, no partials)")
+    while True:
+        choice = input("Enter choice [1/2]: ").strip()
+        if choice == "1":
+            return "nemotron"
+        if choice == "2":
+            return "whisper"
+        print("Invalid choice. Please enter 1 or 2.")
+
+
+def resample_to_16k(wav_path: str) -> str:
+    audio, sr = sf.read(wav_path, dtype="float32")
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=1)
+    if sr != TARGET_SR:
+        audio = resampy.resample(audio, sr, TARGET_SR)
+    audio = np.clip(audio, -1.0, 1.0)
+    audio = (audio * 32767).astype(np.int16)
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    tmp.close()
+    sf.write(tmp.name, audio, TARGET_SR, subtype="PCM_16")
+    return tmp.name
+
+
+async def receiver(ws):
+    finals = []
+    while True:
+        try:
+            msg = await ws.recv()
+        except websockets.exceptions.ConnectionClosed:
+            return finals
+
+        obj = json.loads(msg)
+        typ = obj.get("type")
+
+        if typ == "partial":
+            txt = obj.get("text", "").replace("\n", " ")
+            sys.stdout.write("\r[PARTIAL] " + txt[:160] + " " * 20)
+            sys.stdout.flush()
+
+        elif typ == "final":
+            txt = (obj.get("text") or "").strip()
+            print("\n[FINAL]", txt)
+            finals.append(txt)
+
+            print(
+                "[SERVER_METRICS]",
+                f"reason={obj.get('reason')}",
+                f"ttf_ms={obj.get('ttf_ms')}",
+                f"audio_ms={obj.get('audio_ms')}",
+                f"rtf={obj.get('rtf')}",
+                f"chunks={obj.get('chunks')}",
+            )
+
+
+async def whisper_status_printer():
+    while True:
+        await asyncio.sleep(0.4)
+        if time.time() - last_audio_time < 1.0:
+            sys.stdout.write("\r⏳ Whisper is transcribing…   ")
+            sys.stdout.flush()
+
+
+async def run_mic(ws):
+    global last_audio_time
+
+    if not HAS_MIC:
+        raise RuntimeError("sounddevice not installed. Install: pip install sounddevice")
+
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
+
+    def cb(indata, frames, t, status):
+        global last_audio_time
+        last_audio_time = time.time()
+        loop.call_soon_threadsafe(q.put_nowait, indata.copy())
+
+    stream = sd.InputStream(
+        samplerate=TARGET_SR,
+        channels=1,
+        dtype="int16",
+        blocksize=CHUNK_FRAMES,
+        callback=cb,
+    )
+    stream.start()
+
+    print("\n🎤 Speak freely. Pause to end sentences. Ctrl+C to exit.")
+
+    async def sender():
+        while True:
+            blk = await q.get()
+            if blk is None:
+                return
+            try:
+                await ws.send(blk.tobytes())
+            except websockets.exceptions.ConnectionClosed:
+                return
+
+    send_task = asyncio.create_task(sender())
+
+    try:
+        while True:
+            await asyncio.sleep(0.25)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stream.stop()
+        stream.close()
+
+        try:
+            await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
+            await asyncio.sleep(0.8)
+            await ws.send(b"")
+        except Exception:
+            pass
+
+        await q.put(None)
+        await send_task
+
+
+async def main():
+    global is_whisper
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
+    p.add_argument("--mic", action="store_true", help="Use live microphone")
+    args = p.parse_args()
+
+    backend = choose_backend()
+    is_whisper = backend == "whisper"
+
+    async with websockets.connect(args.url, max_size=None) as ws:
+        print(f"\n[INFO] Connected to {args.url}")
+        print(f"[INFO] Selected backend: {backend}")
+
+        # 🔑 Send backend selection FIRST
+        await ws.send(json.dumps({
+            "type": "config",
+            "backend": backend
+        }))
+
+        recv_task = asyncio.create_task(receiver(ws))
+
+        status_task = None
+        if is_whisper:
+            status_task = asyncio.create_task(whisper_status_printer())
+
+        if args.mic:
+            await run_mic(ws)
+
+        finals = await recv_task
+
+        if status_task:
+            status_task.cancel()
+
+    print("\nFULL TRANSCRIPT:")
+    print(" ".join([t for t in finals if t.strip()]))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

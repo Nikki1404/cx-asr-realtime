@@ -7,7 +7,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from app.config import load_config, Config
+from app.config import load_config, Config, MODEL_MAP 
 from app.metrics import *
 from app.vad import AdaptiveEnergyVAD
 from app.factory import build_engine
@@ -18,8 +18,6 @@ logging.basicConfig(level=cfg.log_level)
 log = logging.getLogger("asr_server")
 
 app = FastAPI()
-
-# cache engines per backend
 ENGINE_CACHE: dict[str, ASREngine] = {}
 
 
@@ -27,20 +25,24 @@ def get_engine(backend: str) -> ASREngine:
     if backend in ENGINE_CACHE:
         return ENGINE_CACHE[backend]
 
+    # ✅ FIXED: Use backend-specific model from MODEL_MAP
+    model_name = MODEL_MAP.get(backend, MODEL_MAP["nemotron"])
+    
     tmp_cfg = Config()
     object.__setattr__(tmp_cfg, 'asr_backend', backend)
-    object.__setattr__(tmp_cfg, 'model_name', cfg.model_name)  # FIXED: Use global cfg.model_name
+    object.__setattr__(tmp_cfg, 'model_name', model_name)  # ← BACKEND SPECIFIC!
     object.__setattr__(tmp_cfg, 'device', cfg.device)
     object.__setattr__(tmp_cfg, 'sample_rate', cfg.sample_rate)
     object.__setattr__(tmp_cfg, 'context_right', cfg.context_right)
 
+    print(f"DEBUG: Creating engine backend='{backend}' model='{model_name}'")  # Debug
+
     engine = build_engine(tmp_cfg)
     load_sec = engine.load()
-    log.info(f"Loaded backend={backend} model={tmp_cfg.model_name} in {load_sec:.2f}s")
+    log.info(f"Loaded backend={backend} model={model_name} in {load_sec:.2f}s")
 
     ENGINE_CACHE[backend] = engine
     return engine
-
 
 @app.get("/metrics")
 async def metrics():

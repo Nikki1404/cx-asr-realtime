@@ -33,3 +33,5 @@ COPY scripts /srv/scripts
 EXPOSE 8002
 
 CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002", "--workers", "1"]
+
+Also, please use this extension for the websocket: /asr/realtime-custom-vad 

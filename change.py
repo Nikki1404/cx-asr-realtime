@@ -52,6 +52,9 @@ CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002", 
 
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
+ENV https_proxy="http://163.116.128.80:8080"
+ENV http_proxy="http://163.116.128.80:8080"
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -62,9 +65,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /srv
 
-# ----------------------------
-# System dependencies
-# ----------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -79,29 +79,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3 -m pip install -U pip setuptools wheel
 
-# ----------------------------
-# Python deps (NO torch here!)
-# ----------------------------
 COPY requirements.txt /srv/requirements.txt
 RUN python3 -m pip install --no-cache-dir -r /srv/requirements.txt
 
-# ----------------------------
-# NeMo (ASR)
-# ----------------------------
 RUN python3 -m pip install --no-cache-dir \
     "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main"
 
-# ----------------------------
-# 🔥 FORCE Torch + Torchaudio (LAST)
-# ----------------------------
 RUN python3 -m pip install --no-cache-dir --force-reinstall \
     --index-url https://download.pytorch.org/whl/cu124 \
     torch==2.4.1 \
     torchaudio==2.4.1
 
-# ----------------------------
-# App code
-# ----------------------------
+
 COPY app /srv/app
 COPY scripts /srv/scripts
 

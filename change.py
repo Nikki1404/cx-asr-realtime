@@ -1,5 +1,7 @@
-# Use NVIDIA's official PyTorch image - has torch+torchaudio+CUDA pre-built
 FROM nvcr.io/nvidia/pytorch:25.01-py3
+
+ENV https_proxy="http://163.116.128.80:8080"
+ENV http_proxy="http://163.116.128.80:8080"
 
 WORKDIR /srv
 
@@ -11,7 +13,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TRANSFORMERS_CACHE=/srv/hf_cache \
     TORCH_HOME=/srv/hf_cache
 
-# Install system dependencies for audio (torchaudio + NeMo)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ffmpeg \
@@ -23,7 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /srv/requirements.txt
 RUN pip install --no-cache-dir -r /srv/requirements.txt
 
-# NeMo for Nemotron (will use pre-installed torch/torchaudio)
 RUN pip install --no-cache-dir \
     "git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]"
 

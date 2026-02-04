@@ -7,7 +7,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from app.config import load_config
+from app.config import load_config, Config
 from app.metrics import *
 from app.vad import AdaptiveEnergyVAD
 from app.factory import build_engine
@@ -18,19 +18,28 @@ logging.basicConfig(level=cfg.log_level)
 log = logging.getLogger("asr_server")
 
 app = FastAPI()
-engine: ASREngine | None = None
+
+# cache engines per backend
+ENGINE_CACHE: dict[str, ASREngine] = {}
 
 
-@app.on_event("startup")
-async def startup():
-    global engine
-    engine = build_engine(cfg)
+def get_engine(backend: str) -> ASREngine:
+    if backend in ENGINE_CACHE:
+        return ENGINE_CACHE[backend]
+
+    tmp_cfg = Config()
+    tmp_cfg.asr_backend = backend
+    tmp_cfg.model_name = ""
+    tmp_cfg.device = cfg.device
+    tmp_cfg.sample_rate = cfg.sample_rate
+    tmp_cfg.context_right = cfg.context_right
+
+    engine = build_engine(tmp_cfg)
     load_sec = engine.load()
-    log.info(
-        f"ASR backend={cfg.asr_backend} "
-        f"model={cfg.model_name} "
-        f"loaded in {load_sec:.2f}s"
-    )
+    log.info(f"Loaded backend={backend} in {load_sec:.2f}s")
+
+    ENGINE_CACHE[backend] = engine
+    return engine
 
 
 @app.get("/metrics")
@@ -40,13 +49,20 @@ async def metrics():
 
 @app.websocket("/ws/asr")
 async def ws_asr(ws: WebSocket):
-    assert engine is not None
     await ws.accept()
 
-    # ===========================
-    # 🔑 PROMETHEUS LABEL BINDING
-    # ===========================
-    labels = (cfg.asr_backend, cfg.model_name)
+    # 🔑 FIRST MESSAGE MUST BE CONFIG
+    init = await ws.receive_text()
+    init_obj = json.loads(init)
+
+    backend = init_obj.get("backend")
+    if backend not in ("nemotron", "whisper"):
+        await ws.close(code=4000)
+        return
+
+    engine = get_engine(backend)
+
+    labels = (backend, engine.model_name)
 
     active_streams = ACTIVE_STREAMS.labels(*labels)
     partials_total = PARTIALS_TOTAL.labels(*labels)
@@ -65,7 +81,7 @@ async def ws_asr(ws: WebSocket):
     backlog_ms_gauge = BACKLOG_MS.labels(*labels)
 
     active_streams.inc()
-    log.info(f"WS connected: {ws.client}")
+    log.info(f"WS connected ({backend}) {ws.client}")
 
     vad = AdaptiveEnergyVAD(
         cfg.sample_rate,
@@ -96,7 +112,6 @@ async def ws_asr(ws: WebSocket):
             if data is None:
                 continue
 
-            # EOS
             if data == b"":
                 if utt_started:
                     final = session.finalize(cfg.post_speech_pad_ms)
@@ -107,12 +122,13 @@ async def ws_asr(ws: WebSocket):
                         utt_audio_ms,
                         t_utt_start,
                         t_first_partial,
-                        reason="eos",
-                        utterances_total=utterances_total,
-                        finals_total=finals_total,
-                        ttf_wall=ttf_wall,
-                        audio_sec_hist=audio_sec_hist,
-                        rtf_hist=rtf_hist,
+                        "eos",
+                        utterances_total,
+                        finals_total,
+                        ttf_wall,
+                        audio_sec_hist,
+                        rtf_hist,
+                        engine,
                     )
                 break
 
@@ -123,10 +139,8 @@ async def ws_asr(ws: WebSocket):
                 del raw_buf[:frame_bytes]
 
                 is_speech, pre = vad.push_frame(frame)
-
                 silence_ms = 0 if is_speech else silence_ms + cfg.vad_frame_ms
 
-                # ---- utterance start ----
                 if pre and not utt_started:
                     utt_started = True
                     utt_audio_ms = 0
@@ -140,9 +154,7 @@ async def ws_asr(ws: WebSocket):
 
                 session.accept_pcm16(frame)
                 utt_audio_ms += cfg.vad_frame_ms
-                backlog_ms_gauge.set(session.backlog_ms() if hasattr(session, "backlog_ms") else 0)
 
-                # ---- partials ----
                 if engine.caps.partials:
                     text = session.step_if_ready()
                     if text:
@@ -153,7 +165,6 @@ async def ws_asr(ws: WebSocket):
                                 ttft_wall.observe(t_first_partial - t_utt_start)
                         await ws.send_text(json.dumps({"type": "partial", "text": text}))
 
-                # ---- endpoint ----
                 if (
                     not is_speech
                     and utt_audio_ms >= cfg.min_utt_ms
@@ -167,33 +178,13 @@ async def ws_asr(ws: WebSocket):
                         utt_audio_ms,
                         t_utt_start,
                         t_first_partial,
-                        reason="silence",
-                        utterances_total=utterances_total,
-                        finals_total=finals_total,
-                        ttf_wall=ttf_wall,
-                        audio_sec_hist=audio_sec_hist,
-                        rtf_hist=rtf_hist,
-                    )
-                    vad.reset()
-                    utt_started = False
-                    utt_audio_ms = 0
-                    silence_ms = 0
-
-                elif utt_audio_ms >= cfg.max_utt_ms:
-                    final = session.finalize(cfg.post_speech_pad_ms)
-                    await _emit_final(
-                        ws,
-                        session,
-                        final,
-                        utt_audio_ms,
-                        t_utt_start,
-                        t_first_partial,
-                        reason="max_utt",
-                        utterances_total=utterances_total,
-                        finals_total=finals_total,
-                        ttf_wall=ttf_wall,
-                        audio_sec_hist=audio_sec_hist,
-                        rtf_hist=rtf_hist,
+                        "silence",
+                        utterances_total,
+                        finals_total,
+                        ttf_wall,
+                        audio_sec_hist,
+                        rtf_hist,
+                        engine,
                     )
                     vad.reset()
                     utt_started = False
@@ -202,27 +193,24 @@ async def ws_asr(ws: WebSocket):
 
     finally:
         active_streams.dec()
-        try:
-            await ws.close()
-        except Exception:
-            pass
+        await ws.close()
         log.info("WS disconnected")
 
 
 async def _emit_final(
-    ws: WebSocket,
+    ws,
     session,
-    final_text: str,
-    audio_ms: int,
-    t_start: float,
-    t_first_partial: float | None,
-    reason: str,
-    *,
+    final_text,
+    audio_ms,
+    t_start,
+    t_first_partial,
+    reason,
     utterances_total,
     finals_total,
     ttf_wall,
     audio_sec_hist,
     rtf_hist,
+    engine,
 ):
     if not final_text:
         return
@@ -231,7 +219,7 @@ async def _emit_final(
     finals_total.inc()
 
     audio_sec = audio_ms / 1000.0
-    ttf = time.time() - t_start if t_start else 0.0
+    ttf = time.time() - t_start
 
     ttf_wall.observe(ttf)
     audio_sec_hist.observe(audio_sec)
@@ -240,7 +228,7 @@ async def _emit_final(
     if audio_sec > 0:
         rtf_hist.observe(compute_sec / audio_sec)
 
-    payload = {
+    await ws.send_text(json.dumps({
         "type": "final",
         "text": final_text,
         "reason": reason,
@@ -256,6 +244,6 @@ async def _emit_final(
         "model_infer_ms": int(session.utt_infer * 1000),
         "model_flush_ms": int(session.utt_flush * 1000),
         "rtf": (compute_sec / audio_sec) if audio_sec > 0 else None,
-    }
+    }))
 
-    await ws.send_text(json.dumps(payload))
+

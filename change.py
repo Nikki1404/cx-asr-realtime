@@ -47,4 +47,4 @@ CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
 
 docker tag cx_asr_realtime:latest 058264113403.dkr.ecr.us-east-1.amazonaws.com/cx-speech/asr-realtime:0.0.1
 docker push 058264113403.dkr.ecr.us-east-1.amazonaws.com/cx-speech/asr-realtime:0.0.1
-
+https://us-east-1.console.aws.amazon.com/ecr/repositories/private/058264113403/cx-speech/asr-realti%E2%80%A6?region=us-east-1

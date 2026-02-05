@@ -44,3 +44,5 @@ COPY scripts /srv/scripts
 
 EXPOSE 8002
 CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
+
+need to push the docker with version named 0.0.1 to this ecr https://us-east-1.console.aws.amazon.com/ecr/repositories/private/058264113403/cx-speech/asr-realti%E2%80%A6?region=us-east-1 

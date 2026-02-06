@@ -1,52 +1,115 @@
-# syntax=docker/dockerfile:1.4
-
-FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04
-
-ENV PYTHON_VERSION=3.10
-ENV DEBIAN_FRONTEND=noninteractive
+# ===========================
+# --- STAGE 1: BUILDER ---
+# ===========================
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS builder
 
 ARG USE_PROXY=false
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 
-RUN if [ "$USE_PROXY" = "true" ]; then \
-      echo "Setting proxy variables..."; \
-      export http_proxy=${HTTP_PROXY}; \
-      export https_proxy=${HTTPS_PROXY}; \
-    else \
-      echo "Skipping proxy setup"; \
-    fi && \
-    echo "Continuing build steps..."
+ENV DEBIAN_FRONTEND=noninteractive
 
+WORKDIR /build
 
-# ENV GOOGLE_APPLICATION_CREDENTIALS="/app/src/config/google_credential.json"    
-WORKDIR /app
-
-RUN --mount=type=cache,target=/var/cache/apt \
-    apt-get update && apt-get install -y --no-install-recommends \
-    python3-pip \
-    python3-dev \
-    build-essential \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt ./
-
-RUN pip3 install --break-system-packages -r requirements.txt
-
-ENV HF_HOME=/root/.cache/huggingface
-RUN --mount=type=cache,target=/root/.cache/huggingface \
-    echo "Using persistent Hugging Face cache at $HF_HOME"
-
-COPY src ./src
-
-EXPOSE 3000
-
+# ---------------------------
+# Proxy (set ONCE if needed)
+# ---------------------------
 ENV http_proxy=""
 ENV https_proxy=""
 
-ENV GOOGLE_APPLICATION_CREDENTIALS="/app/src/config/google_credential.json"
+RUN if [ "$USE_PROXY" = "true" ]; then \
+        echo "🔐 Enabling proxy for builder stage"; \
+        echo "http_proxy=${HTTP_PROXY}" >> /etc/environment; \
+        echo "https_proxy=${HTTPS_PROXY}" >> /etc/environment; \
+        export http_proxy=${HTTP_PROXY}; \
+        export https_proxy=${HTTPS_PROXY}; \
+    else \
+        echo "🌐 Proxy disabled for builder stage"; \
+    fi
 
-ENTRYPOINT ["/bin/bash", "-c", "export LD_LIBRARY_PATH=$(python3 -c 'import os; import nvidia.cublas.lib; import nvidia.cudnn.lib; print(os.path.dirname(nvidia.cublas.lib.__file__) + \":\" + os.path.dirname(nvidia.cudnn.lib.__file__))') && exec \"$@\"", "--"]
+# ---------------------------
+# System deps
+# ---------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
+    python3-dev \
+    git \
+    build-essential \
+    ca-certificates \
+    ffmpeg \
+    libsndfile1 \
+    libsox-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-CMD ["python3", "-m", "src.main", "--host", "0.0.0.0", "--port", "3000"]
+# ---------------------------
+# Python tooling
+# ---------------------------
+RUN python3.10 -m pip install --no-cache-dir -U pip setuptools wheel && \
+    python3.10 -m pip install --no-cache-dir "Cython<3.0"
+
+# ---------------------------
+# Torch + Torchaudio (LOCKED)
+# ---------------------------
+RUN python3.10 -m pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cu124 \
+    torch==2.5.1 \
+    torchaudio==2.5.1
+
+# ---------------------------
+# App dependencies
+# ---------------------------
+COPY requirements.txt .
+RUN python3.10 -m pip install --no-cache-dir -r requirements.txt
+
+# ---------------------------
+# NeMo (pinned, ABI-safe)
+# ---------------------------
+RUN python3.10 -m pip install --no-cache-dir --no-build-isolation \
+    "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@v1.23.0"
+
+# ===========================
+# --- STAGE 2: RUNTIME ---
+# ===========================
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/srv \
+    HF_HOME=/srv/hf_cache \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+WORKDIR /srv
+
+# ---------------------------
+# Runtime-only deps
+# ---------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
+    ffmpeg \
+    libsndfile1 \
+    libsox-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------
+# Copy Python env (robust)
+# ---------------------------
+COPY --from=builder /usr/local /usr/local
+
+# ---------------------------
+# Security: non-root
+# ---------------------------
+RUN useradd -m appuser && chown -R appuser:appuser /srv
+USER appuser
+
+# ---------------------------
+# App code
+# ---------------------------
+COPY --chown=appuser:appuser app ./app
+COPY --chown=appuser:appuser scripts ./scripts
+
+EXPOSE 8002
+
+CMD ["python3.10", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]

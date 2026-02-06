@@ -1,6 +1,3 @@
-# ===========================
-# --- STAGE 1: BUILDER ---
-# ===========================
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS builder
 
 ARG USE_PROXY=false

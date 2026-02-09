@@ -364,32 +364,11 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 
-python benchmarking.py ^
-  --url ws://127.0.0.1:8002/ws/asr ^
-  --data-wav-root "C:\path\to\datasets\data\wav" ^
-  --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
-  --max-files 30
+python benchmarking.py --url ws://127.0.0.1:8002/ws/asr --data-wav-root "C:\path\to\datasets\data\wav" --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" --max-files 30
 
-python benchmarking.py ^
-  --url ws://127.0.0.1:8002/asr/realtime-custom-vad ^
-  --data-wav-root "C:\path\to\datasets\data\wav" ^
-  --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
-  --inject-pause "2.0:0.6,5.0:1.0" ^
-  --max-files 20
+python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-wav-root "C:\path\to\datasets\data\wav" --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" --inject-pause "2.0:0.6,5.0:1.0" --max-files 20
 
+python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-wav-root "C:\path\to\datasets\data\wav" --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" --fast --max-files 30
 
-python benchmarking.py ^
-  --url ws://127.0.0.1:8002/asr/realtime-custom-vad ^
-  --data-wav-root "C:\path\to\datasets\data\wav" ^
-  --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
-  --fast ^
-  --max-files 30
-
-
-python benchmarking.py ^
-  --url ws://127.0.0.1:8002/asr/realtime-custom-vad ^
-  --data-wav-root "C:\path\to\datasets\data\wav" ^
-  --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
-  --workers 4 ^
-  --max-files 20
+python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-wav-root "C:\path\to\datasets\data\wav" --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech"--workers 4 --max-files 20
 

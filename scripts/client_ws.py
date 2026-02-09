@@ -160,7 +160,7 @@ async def main():
     global is_whisper
 
     p = argparse.ArgumentParser()
-    p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
+    p.add_argument("--url", default="ws://127.0.0.1:8002/asr/realtime-custom-vad")
     p.add_argument("--mic", action="store_true", help="Use live microphone")
     args = p.parse_args()
 

@@ -98,3 +98,9 @@ ENV https_proxy=""
 EXPOSE 8002
 
 CMD ["python3.10", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
+
+docker build \
+  --build-arg USE_PROXY=true \
+  --build-arg HTTP_PROXY=http://163.116.128.80:8080 \
+  --build-arg HTTPS_PROXY=http://163.116.128.80:8080 \
+  -t cx_asr_realtime .

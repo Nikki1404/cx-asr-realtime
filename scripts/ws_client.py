@@ -8,7 +8,7 @@ import time
 # =========================
 # CONFIG
 # =========================
-WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/ws/asr"
+WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/asr/realtime-custom-vad"
 
 # ASR backend: "nemotron" or "whisper"
 ASR_BACKEND = "nemotron"

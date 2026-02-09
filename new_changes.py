@@ -171,18 +171,22 @@ RUN python3.10 -m pip install \
     torch==2.5.1 torchaudio==2.5.1
 
 # ---------------------------
+# App deps
+# ---------------------------
+COPY requirements.txt .
+RUN python3.10 -m pip install -r requirements.txt
+
+# ---------------------------
 # 🔴 CRITICAL PINS (FIX)
 # ---------------------------
 RUN python3.10 -m pip install \
     huggingface_hub==0.19.4 \
     transformers==4.39.3 \
-    accelerate==0.27.2
+    accelerate==0.27.2 \
+    datasets==2.18.0 \
+    pyarrow==12.0.1
 
-# ---------------------------
-# App deps
-# ---------------------------
-COPY requirements.txt .
-RUN python3.10 -m pip install -r requirements.txt
+
 
 # ---------------------------
 # NeMo (NOW SAFE)

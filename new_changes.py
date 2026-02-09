@@ -138,14 +138,20 @@ docker run --gpus all -p 8002:8002 \
   -e HTTPS_PROXY=http://163.116.128.80:8080 \
   cx_asr_realtime
 
-[NeMo I 2026-02-09 11:03:56 rnnt_models:83] Using RNNT Loss : warprnnt_numba
-    Loss warprnnt_numba_kwargs: {'fastemit_lambda': 0.005, 'clamp': -1.0}
-[NeMo I 2026-02-09 11:03:56 rnnt_models:231] Using RNNT Loss : warprnnt_numba
-    Loss warprnnt_numba_kwargs: {'fastemit_lambda': 0.005, 'clamp': -1.0}
-[NeMo I 2026-02-09 11:03:56 rnnt_models:231] Using RNNT Loss : warprnnt_numba
-    Loss warprnnt_numba_kwargs: {'fastemit_lambda': 0.005, 'clamp': -1.0}
-[NeMo I 2026-02-09 11:04:16 modelPT:501] Model EncDecRNNTBPEModel was successfully restored from /srv/hf_cache/hub/models--nvidia--nemotron-speech-streaming-en-0.6b/snapshots/c0acae9cc4163ab0d45cd403fbecbcb0635ee685/nemotron-speech-streaming-en-0.6b.nemo.
-ERROR:asr_server:❌ Failed to preload nemotron: CUDA out of memory. Tried to allocate 16.00 MiB. GPU 0 has a total capacity of 22.09 GiB of which 12.19 MiB is free. Including non-PyTorch memory, this process has 0 bytes memory in use. Of the allocated memory 3.25 GiB is allocated by PyTorch, and 144.92 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
-🎉 All engines preloaded! Client requests will be INSTANT.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
+How to use
+EC2 (with proxy)
+docker build \
+  --build-arg USE_PROXY=true \
+  --build-arg HTTP_PROXY=http://163.116.128.80:8080 \
+  --build-arg HTTPS_PROXY=http://163.116.128.80:8080 \
+  -t cx_asr_realtime .
+
+docker run --gpus all -p 8002:8002 \
+  -e USE_PROXY=true \
+  -e HTTP_PROXY=http://163.116.128.80:8080 \
+  -e HTTPS_PROXY=http://163.116.128.80:8080 \
+  cx_asr_realtime
+
+Kubernetes (no proxy)
+
+Just deploy the image. Nothing extra needed.

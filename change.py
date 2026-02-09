@@ -372,3 +372,17 @@ python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-
 
 python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-wav-root "C:\path\to\datasets\data\wav" --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech"--workers 4 --max-files 20
 
+
+run_id = str(uuid.uuid4())
+out_path = Path(args.out)
+out_file = out_path.with_name(
+    f"{out_path.stem}_{run_id}{out_path.suffix}"
+)
+
+with open(out_file, "w", newline="", encoding="utf-8") as f:
+    w = csv.writer(f)
+    w.writerow(BenchResult.__dataclass_fields__.keys())
+    for r in results:
+        w.writerow(r.__dict__.values())
+
+print(f"\nSaved → {out_file}")

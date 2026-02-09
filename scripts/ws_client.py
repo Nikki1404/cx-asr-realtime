@@ -1,232 +1,193 @@
 import asyncio
-import argparse
-import json
-import os
-import sys
-import time
-import wave
-import tempfile
-
-import numpy as np
-import soundfile as sf
-import resampy
 import websockets
+import json
+import pyaudio
+import numpy as np
+import time
 
-try:
-    import sounddevice as sd
-    HAS_MIC = True
-except Exception:
-    HAS_MIC = False
+# =========================
+# CONFIG
+# =========================
+WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/ws/asr"
+
+# ASR backend: "nemotron" or "whisper"
+ASR_BACKEND = "nemotron"
 
 TARGET_SR = 16000
+CHANNELS = 1
 
-# For Nemotron RNNT stability: 80–120ms chunks work well
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 SLEEP_SEC = CHUNK_MS / 1000.0
 
-# ---- Whisper UX state ----
+FORMAT = pyaudio.paInt16
+
+# =========================
+# GLOBAL STATE
+# =========================
+websocket = None
+stream = None
+is_recording = False
 last_audio_time = 0.0
-is_whisper = False
 
 
-def resample_to_16k(wav_path: str) -> str:
-    audio, sr = sf.read(wav_path, dtype="float32")
-    if audio.ndim > 1:
-        audio = np.mean(audio, axis=1)
-    if sr != TARGET_SR:
-        audio = resampy.resample(audio, sr, TARGET_SR)
-    audio = np.clip(audio, -1.0, 1.0)
-    audio = (audio * 32767).astype(np.int16)
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    tmp.close()
-    sf.write(tmp.name, audio, TARGET_SR, subtype="PCM_16")
-    return tmp.name
-
-
-async def receiver(ws):
-    """
-    Prints partials live (Nemotron).
-    Prints finals + server metrics after pause (all engines).
-    """
-    finals = []
-    while True:
-        try:
-            msg = await ws.recv()
-        except websockets.exceptions.ConnectionClosed:
-            return finals
-
-        obj = json.loads(msg)
-        typ = obj.get("type")
-
-        if typ == "partial":
-            txt = obj.get("text", "").replace("\n", " ")
-            sys.stdout.write("\r[PARTIAL] " + txt[:160] + " " * 20)
-            sys.stdout.flush()
-
-        elif typ == "final":
-            txt = (obj.get("text") or "").strip()
-            print("\n[FINAL]", txt)
-            finals.append(txt)
-
-            print(
-                "[SERVER_METRICS]",
-                f"reason={obj.get('reason')}",
-                f"ttft_ms={obj.get('ttft_ms')}",
-                f"ttf_ms={obj.get('ttf_ms')}",
-                f"audio_ms={obj.get('audio_ms')}",
-                f"rtf={obj.get('rtf')}",
-                f"chunks={obj.get('chunks')}",
-                f"preproc_ms={obj.get('model_preproc_ms')}",
-                f"infer_ms={obj.get('model_infer_ms')}",
-                f"flush_ms={obj.get('model_flush_ms')}",
-            )
-
-
-async def whisper_status_printer():
-    """
-    Client-side UX for Whisper:
-    shows status while user is actively speaking.
-    """
-    while True:
-        await asyncio.sleep(0.4)
-        if time.time() - last_audio_time < 1.0:
-            sys.stdout.write("\r⏳ Whisper is transcribing…   ")
-            sys.stdout.flush()
-
-
-async def run_wav(ws, wav_path: str, realtime: bool):
-    global last_audio_time
-
-    with wave.open(wav_path, "rb") as wf:
+# =========================
+# RECEIVE DATA
+# =========================
+async def receive_data():
+    global websocket
+    try:
         while True:
-            data = wf.readframes(CHUNK_FRAMES)
-            if not data:
-                break
-            last_audio_time = time.time()
-            await ws.send(data)
-            if realtime:
-                await asyncio.sleep(SLEEP_SEC)
+            data = await websocket.recv()
+            if isinstance(data, str):
+                json_data = json.loads(data)
 
-    # silence + EOS
-    silence_frames = int(TARGET_SR * 0.8)
-    await ws.send(b"\x00\x00" * silence_frames)
-    await asyncio.sleep(0.8)
-    await ws.send(b"")
+                msg_type = json_data.get("type")
+
+                if msg_type == "partial":
+                    txt = json_data.get("text", "").replace("\n", " ")
+                    print(f"\r[PARTIAL] {txt[:160]}", end="", flush=True)
+
+                elif msg_type == "final":
+                    print("\n[FINAL]", json_data.get("text", ""))
+                    print(
+                        "[SERVER_METRICS]",
+                        f"reason={json_data.get('reason')}",
+                        f"ttf_ms={json_data.get('ttf_ms')}",
+                        f"ttft_ms={json_data.get('ttft_ms')}",
+                        f"audio_ms={json_data.get('audio_ms')}",
+                        f"rtf={json_data.get('rtf')}",
+                        f"chunks={json_data.get('chunks')}",
+                    )
+
+                else:
+                    # Config / status / misc
+                    print("[SERVER]", json_data)
+
+    except websockets.exceptions.ConnectionClosed:
+        print("\n[INFO] WebSocket connection closed")
 
 
-async def run_mic(ws):
-    global last_audio_time
+# =========================
+# CONNECT
+# =========================
+async def connect_websocket():
+    global websocket
+    websocket = await websockets.connect(WEBSOCKET_ADDRESS, max_size=None)
+    print("[INFO] WebSocket connection established")
 
-    if not HAS_MIC:
-        raise RuntimeError("sounddevice not installed. Install: pip install sounddevice")
 
-    loop = asyncio.get_running_loop()
-    q: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
+# =========================
+# SEND AUDIO CONFIG (EXACT test.py STYLE)
+# =========================
+async def send_audio_config():
+    """
+    Everything goes as JSON config — exactly like test.py
+    """
+    audio_config = {
+        "service": "asr",
+        "asrPipeline": ASR_BACKEND,     # <-- key difference
+        "sampling_rate": TARGET_SR,
+        "channels": CHANNELS,
 
-    def cb(indata, frames, t, status):
-        global last_audio_time
-        last_audio_time = time.time()
-        loop.call_soon_threadsafe(q.put_nowait, indata.copy())
+        # Streaming behavior
+        "chunk_offset_seconds": CHUNK_MS / 1000.0,
+        "chunk_length_seconds": CHUNK_MS / 1000.0,
 
-    stream = sd.InputStream(
-        samplerate=TARGET_SR,
-        channels=1,
-        dtype="int16",
-        blocksize=CHUNK_FRAMES,
-        callback=cb,
+        # Optional flags (safe to ignore server-side)
+        "user_speaking": True,
+        "realtime": True,
+    }
+
+    await websocket.send(json.dumps(audio_config))
+    print(f"[INFO] Sent audio_config: {audio_config}")
+
+
+# =========================
+# AUDIO STREAM
+# =========================
+async def start_recording():
+    global stream, is_recording
+    is_recording = True
+
+    pa = pyaudio.PyAudio()
+    stream = pa.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=TARGET_SR,
+        input=True,
+        frames_per_buffer=CHUNK_FRAMES,
     )
-    stream.start()
 
-    print("🎤 Speak freely. Pause to end sentences. Ctrl+C to exit.")
+    print("🎤 Recording started (Ctrl+C to stop)")
 
-    async def sender():
-        while True:
-            blk = await q.get()
-            if blk is None:
-                return
-            try:
-                await ws.send(blk.tobytes())
-            except websockets.exceptions.ConnectionClosed:
-                return
 
-    send_task = asyncio.create_task(sender())
+async def stop_recording():
+    global stream, is_recording
+    is_recording = False
+
+    if stream:
+        stream.stop_stream()
+        stream.close()
+
+    print("\n🛑 Recording stopped")
+
+
+# =========================
+# SEND AUDIO LOOP
+# =========================
+async def process_audio():
+    global last_audio_time
+    try:
+        while is_recording:
+            data = stream.read(CHUNK_FRAMES, exception_on_overflow=False)
+            last_audio_time = time.time()
+            await websocket.send(data)
+
+            # Mic-like pacing
+            await asyncio.sleep(SLEEP_SEC)
+
+    except websockets.exceptions.ConnectionClosed:
+        print("\n[ERROR] WebSocket closed while sending audio")
+
+
+# =========================
+# MAIN
+# =========================
+async def main():
+    global websocket
+
+    await connect_websocket()
+    await send_audio_config()
+    await start_recording()
+
+    receive_task = asyncio.create_task(receive_data())
+    send_task = asyncio.create_task(process_audio())
 
     try:
         while True:
             await asyncio.sleep(0.25)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        stream.stop()
-        stream.close()
 
+    except KeyboardInterrupt:
+        print("\n[INFO] Ctrl+C received")
+
+    finally:
+        # EOS handling (important)
         try:
-            await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
+            silence = b"\x00\x00" * int(TARGET_SR * 0.8)
+            await websocket.send(silence)
             await asyncio.sleep(0.8)
-            await ws.send(b"")
+            await websocket.send(b"")  # EOS
         except Exception:
             pass
 
-        await q.put(None)
-        await send_task
+        await stop_recording()
 
+        receive_task.cancel()
+        send_task.cancel()
 
-async def main():
-    global is_whisper
-
-    p = argparse.ArgumentParser()
-    p.add_argument("--url", default="ws://127.0.0.1:8000/ws/asr")
-    p.add_argument("--wav", help="Path to wav file")
-    p.add_argument("--mic", action="store_true", help="Use live microphone")
-    p.add_argument("--fast", action="store_true", help="Disable realtime pacing (wav only)")
-    args = p.parse_args()
-
-    is_whisper = os.getenv("ASR_BACKEND") == "whisper"
-
-    start = time.time()
-
-    async with websockets.connect(args.url, max_size=None) as ws:
-        print(f"[INFO] Connected to {args.url}")
-
-        recv_task = asyncio.create_task(receiver(ws))
-
-        status_task = None
-        if is_whisper:
-            status_task = asyncio.create_task(whisper_status_printer())
-
-        if args.mic:
-            await run_mic(ws)
-        else:
-            if not args.wav:
-                raise ValueError("--wav required unless --mic is set")
-
-            wav = args.wav
-            cleanup = None
-            with wave.open(wav, "rb") as wf:
-                sr, ch, sw = wf.getframerate(), wf.getnchannels(), wf.getsampwidth()
-            if sr != TARGET_SR or ch != 1 or sw != 2:
-                print(f"[INFO] Resampling WAV → 16kHz mono PCM16")
-                wav = resample_to_16k(wav)
-                cleanup = wav
-
-            await run_wav(ws, wav, realtime=not args.fast)
-
-            if cleanup:
-                os.unlink(cleanup)
-
-        finals = await recv_task
-
-        if status_task:
-            status_task.cancel()
-
-    total = time.time() - start
-    print("\nFULL TRANSCRIPT:")
-    print(" ".join([t for t in finals if t.strip()]))
-
-    print("\nCLIENT METRICS:")
-    print(f"Total wall time: {total:.2f}s")
+        await websocket.close()
+        print("[INFO] Connection closed")
 
 
 if __name__ == "__main__":

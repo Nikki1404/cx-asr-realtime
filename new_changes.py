@@ -63,6 +63,9 @@ RUN python3 -m pip install --no-cache-dir --force-reinstall \
 # ===========================
 # --- STAGE 2: RUNTIME ---
 # ===========================
+# ===========================
+# --- STAGE 2: RUNTIME ---
+# ===========================
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 # ---- Proxy control (runtime) ----
@@ -82,6 +85,13 @@ RUN if [ "$USE_PROXY" = "true" ]; then \
     fi
 
 # ---------------------------
+# 🔥 CUDA MEMORY FIX (CRITICAL)
+# ---------------------------
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128 \
+    CUDA_DEVICE_MAX_CONNECTIONS=1 \
+    NCCL_P2P_DISABLE=1
+
+# ---------------------------
 # Runtime environment
 # ---------------------------
 ENV PYTHONUNBUFFERED=1 \
@@ -94,9 +104,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 
-# ---------------------------
-# Runtime system deps
-# ---------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3-pip \
@@ -106,20 +113,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# ---------------------------
-# Copy Python environment from builder
-# ---------------------------
 COPY --from=builder /usr/local /usr/local
 
-# ---------------------------
-# Application code
-# ---------------------------
 COPY app /srv/app
 COPY scripts /srv/scripts
 
 EXPOSE 8002
 
 CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
+
 
 
 docker build \

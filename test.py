@@ -1,157 +1,158 @@
 import asyncio
 import websockets
 import json
-import time
-import sys
-import numpy as np
 import pyaudio
+import numpy as np
 
 # =========================
 # CONFIG
 # =========================
-WS_URL = "ws://127.0.0.1:8002/ws/asr"   # change if needed
-BACKEND = "whisper"                    # "whisper" or "nemotron"
+WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/asr/realtime-custom-vad"
+# WEBSOCKET_ADDRESS = "wss://cx-asr.exlservice.com/asr/realtime"
 
 TARGET_SR = 16000
 CHANNELS = 1
-FORMAT = pyaudio.paInt16
 
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 SLEEP_SEC = CHUNK_MS / 1000.0
 
-# Whisper flush tuning
-WHISPER_FLUSH_SILENCE_SEC = 0.35   # 350ms silence
-WHISPER_MAX_FLUSH_INTERVAL = 2.0   # force flush every 2s
+# =========================
+# GLOBAL STATE
+# =========================
+websocket = None
+stream = None
+is_recording = False
 
 # =========================
-# STATE
+# RECEIVE LOOP
 # =========================
-last_audio_time = 0.0
-last_flush_time = 0.0
-is_running = True
+async def receive_data():
+    try:
+        async for msg in websocket:
+            if isinstance(msg, str):
+                obj = json.loads(msg)
+                typ = obj.get("type")
+
+                if typ == "partial":
+                    txt = obj.get("text", "")
+                    print(f"\r[PARTIAL] {txt[:120]} ", end="", flush=True)
+
+                elif typ == "final":
+                    print(f"\n[FINAL] {obj.get('text')}")
+                    print(
+                        "[SERVER]",
+                        f"reason={obj.get('reason')}",
+                        f"ttf_ms={obj.get('ttf_ms')}",
+                        f"audio_ms={obj.get('audio_ms')}",
+                        f"rtf={obj.get('rtf')}",
+                        f"chunks={obj.get('chunks')}",
+                    )
+                else:
+                    print("[SERVER EVENT]", obj)
+
+    except websockets.exceptions.ConnectionClosed:
+        print("\n🔌 WebSocket closed")
 
 # =========================
-# AUDIO CONFIG (ONLY WHAT SERVER NEEDS)
+# CONNECT
 # =========================
-def build_audio_config():
-    return {
+async def connect_websocket():
+    global websocket
+    websocket = await websockets.connect(
+        WEBSOCKET_ADDRESS,
+        max_size=None,
+    )
+    print(f"🔗 Connected to {WEBSOCKET_ADDRESS}")
+
+# =========================
+# SEND CONFIG (ONLY REQUIRED)
+# =========================
+async def send_audio_config(backend: str):
+    """
+    backend: "nemotron" | "whisper"
+    """
+    audio_config = {
         "type": "config",
-        "backend": BACKEND,
+        "backend": backend,
         "sampling_rate": TARGET_SR,
         "chunk_ms": CHUNK_MS,
     }
 
-# =========================
-# RECEIVER
-# =========================
-async def receive_data(ws):
-    while True:
-        try:
-            msg = await ws.recv()
-        except websockets.exceptions.ConnectionClosed:
-            print("\n[INFO] WebSocket closed by server")
-            return
-
-        if isinstance(msg, str):
-            obj = json.loads(msg)
-            typ = obj.get("type")
-
-            if typ == "partial":
-                txt = obj.get("text", "").replace("\n", " ")
-                sys.stdout.write("\r[PARTIAL] " + txt[:160] + " " * 10)
-                sys.stdout.flush()
-
-            elif typ == "final":
-                txt = (obj.get("text") or "").strip()
-                print("\n[FINAL]", txt)
-
-                print(
-                    "[SERVER]",
-                    f"ttf_ms={obj.get('ttf_ms')}",
-                    f"audio_ms={obj.get('audio_ms')}",
-                    f"rtf={obj.get('rtf')}",
-                    f"chunks={obj.get('chunks')}",
-                )
+    await websocket.send(json.dumps(audio_config))
+    print(f"📤 Sent config: {audio_config}")
 
 # =========================
-# MIC STREAM
+# MIC START
 # =========================
-async def stream_microphone(ws):
-    global last_audio_time, last_flush_time, is_running
+async def start_recording():
+    global stream, is_recording
 
-    pa = pyaudio.PyAudio()
-    stream = pa.open(
-        format=FORMAT,
+    p = pyaudio.PyAudio()
+    stream = p.open(
+        format=pyaudio.paInt16,
         channels=CHANNELS,
         rate=TARGET_SR,
         input=True,
         frames_per_buffer=CHUNK_FRAMES,
     )
 
-    print(f"\n🎤 Mic started | backend={BACKEND}")
-    print("Speak freely. Ctrl+C to stop.\n")
+    is_recording = True
+    print("🎤 Recording started (Ctrl+C to stop)")
+
+# =========================
+# MIC STOP + EOS
+# =========================
+async def stop_recording():
+    global stream, is_recording
+    is_recording = False
 
     try:
-        while is_running:
-            data = stream.read(CHUNK_FRAMES, exception_on_overflow=False)
-            pcm = np.frombuffer(data, dtype=np.int16)
+        # trailing silence + EOS
+        await websocket.send(b"\x00\x00" * int(TARGET_SR * 0.8))
+        await asyncio.sleep(0.8)
+        await websocket.send(b"")
+    except Exception:
+        pass
 
-            now = time.time()
-            await ws.send(pcm.tobytes())
-            last_audio_time = now
-
-            # =========================
-            # 🔥 WHISPER MICRO-FLUSH
-            # =========================
-            if BACKEND == "whisper":
-                silence_gap = now - last_audio_time
-                since_flush = now - last_flush_time
-
-                if silence_gap > 0.25 or since_flush > WHISPER_MAX_FLUSH_INTERVAL:
-                    print("\n⏱️ Whisper micro-flush")
-
-                    silence = b"\x00\x00" * int(TARGET_SR * WHISPER_FLUSH_SILENCE_SEC)
-                    await ws.send(silence)
-                    await asyncio.sleep(WHISPER_FLUSH_SILENCE_SEC)
-
-                    await ws.send(b"")  # EOS
-                    last_flush_time = now
-
-            await asyncio.sleep(SLEEP_SEC)
-
-    except KeyboardInterrupt:
-        print("\n🛑 Stopping...")
-    finally:
-        is_running = False
-
-        try:
-            await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
-            await asyncio.sleep(0.8)
-            await ws.send(b"")
-        except Exception:
-            pass
-
+    if stream:
         stream.stop_stream()
         stream.close()
-        pa.terminate()
+
+    print("🛑 Recording stopped")
 
 # =========================
 # MAIN
 # =========================
 async def main():
-    async with websockets.connect(WS_URL, max_size=None) as ws:
-        print("[INFO] Connected:", WS_URL)
+    await connect_websocket()
 
-        # Send config FIRST
-        cfg = build_audio_config()
-        await ws.send(json.dumps(cfg))
-        print("[INFO] Sent config:", cfg)
+    #  CHANGE THIS TO TEST
+    backend = "whisper"
+    # backend = "whisper"
 
-        recv_task = asyncio.create_task(receive_data(ws))
-        await stream_microphone(ws)
+    await send_audio_config(backend)
+    await start_recording()
 
+    recv_task = asyncio.create_task(receive_data())
+
+    try:
+        while True:
+            data = stream.read(CHUNK_FRAMES, exception_on_overflow=False)
+            pcm = np.frombuffer(data, dtype=np.int16)
+            await websocket.send(pcm.tobytes())
+            await asyncio.sleep(SLEEP_SEC)
+
+    except KeyboardInterrupt:
+        print("\n🧠 Keyboard interrupt")
+
+    finally:
+        await stop_recording()
         recv_task.cancel()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     asyncio.run(main())

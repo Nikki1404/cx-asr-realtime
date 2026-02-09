@@ -130,6 +130,8 @@ docker build \
 
 docker run --gpus all -p 8002:8002 \
   -e USE_PROXY=true \
+  -e http_proxy=http://163.116.128.80:8080 \
+  -e https_proxy=http://163.116.128.80:8080 \
   -e HTTP_PROXY=http://163.116.128.80:8080 \
   -e HTTPS_PROXY=http://163.116.128.80:8080 \
   cx_asr_realtime

@@ -113,3 +113,11 @@ async def main():
  
 asyncio.run(main())
  
+(client_env) PS C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts> python ws_client.py
+[INFO] WebSocket connection established
+[INFO] Sent audio_config: {'service': 'asr', 'asrPipeline': 'nemotron', 'sampling_rate': 16000, 'channels': 1, 'chunk_offset_seconds': 0.08, 'chunk_length_seconds': 0.08, 'user_speaking': True, 'realtime': True}
+🎤 Recording started (Ctrl+C to stop)
+
+[INFO] WebSocket connection closed
+
+[ERROR] WebSocket closed while sending audio

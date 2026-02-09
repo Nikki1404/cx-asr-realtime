@@ -70,16 +70,15 @@ ARG USE_PROXY=false
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 
-# Empty by default (K8s-safe)
 ENV http_proxy=""
 ENV https_proxy=""
 
 RUN if [ "$USE_PROXY" = "true" ]; then \
-        echo " Enabling proxy for runtime"; \
-        export http_proxy=${HTTP_PROXY}; \
-        export https_proxy=${HTTPS_PROXY}; \
+        echo "🔐 Persisting runtime proxy"; \
+        echo "http_proxy=${HTTP_PROXY}" >> /etc/environment; \
+        echo "https_proxy=${HTTPS_PROXY}" >> /etc/environment; \
     else \
-        echo "🌐 Proxy disabled for runtime"; \
+        echo "🌐 Runtime proxy disabled"; \
     fi
 
 # ---------------------------

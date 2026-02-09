@@ -116,3 +116,40 @@ EXPOSE 8002
 CMD ["python3.10", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
 
 #docker build --build-arg USE_PROXY=true --build-arg HTTP_PROXY="http://163.116.128.80:8080" --build-arg HTTPS_PROXY="http://163.116.128.80:8080" -t cx_asr_realtime .
+
+
+getting this 
+(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime_updated# docker run --gpus all -p 8002:8002 cx_asr_realtime
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.4.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+/usr/local/lib/python3.10/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+DEBUG: Startup cfg.model_name='nvidia/nemotron-speech-streaming-en-0.6b' cfg.asr_backend='nemotron'
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+🚀 Preloading ASR engines (this happens once at startup)...
+   Loading whisper (openai/whisper-large-v3-turbo)...
+'[Errno 104] Connection reset by peer' thrown while requesting HEAD https://huggingface.co/openai/whisper-large-v3-turbo/resolve/main/processor_config.json
+WARNING:huggingface_hub.utils._http:'[Errno 104] Connection reset by peer' thrown while requesting HEAD https://huggingface.co/openai/whisper-large-v3-turbo/resolve/main/processor_config.json
+Retrying in 1s [Retry 1/5].
+WARNING:huggingface_hub.utils._http:Retrying in 1s [Retry 1/5].
+ERROR:asr_server:❌ Failed to preload whisper: Cannot send a request, as the client has been closed.
+   Loading nemotron (nvidia/nemotron-speech-streaming-en-0.6b)...
+INFO:matplotlib.font_manager:generated new fontManager
+ERROR:asr_server:❌ Failed to preload nemotron: cannot import name 'HfFolder' from 'huggingface_hub' (/usr/local/lib/python3.10/dist-packages/huggingface_hub/__init__.py)
+🎉 All engines preloaded! Client requests will be INSTANT.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)

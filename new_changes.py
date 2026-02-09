@@ -36,15 +36,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3.10 -m pip install --no-cache-dir -U pip setuptools wheel && \
     python3.10 -m pip install --no-cache-dir "Cython<3.0"
 
+# App dependencies
+COPY requirements.txt .
+RUN python3.10 -m pip install --no-cache-dir -r requirements.txt
+
 # Torch + Torchaudio (LOCKED FIRST)
 RUN python3.10 -m pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cu124 \
     torch==2.5.1 \
     torchaudio==2.5.1
 
-# App dependencies
-COPY requirements.txt .
-RUN python3.10 -m pip install --no-cache-dir -r requirements.txt
 
 # NeMo (PINNED, ABI SAFE)
 RUN python3.10 -m pip install --no-cache-dir --no-build-isolation \

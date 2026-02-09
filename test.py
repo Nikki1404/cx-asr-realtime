@@ -1,123 +1,158 @@
-we need to emove the --mic option and the interactive way to choose whisper/nemotron
 import asyncio
 import websockets
 import json
 import pyaudio
 import numpy as np
-import uuid
- 
-# WebSocket address
-# websocket_address = "ws://10.90.126.61:3000"
-# websocket_address = "wss://whisperstream.exlservice.com/asr/realtime"
-websocket_address = "wss://cx-asr.exlservice.com/asr/realtime"
-# websocket_address = "ws://127.0.0.1:3000/asr/realtime"
- 
-# Audio configuration
-sample_rate = 16000
-channels = 1
- 
-# WebSocket connection
+
+# =========================
+# CONFIG
+# =========================
+WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/ws/asr"
+# WEBSOCKET_ADDRESS = "wss://cx-asr.exlservice.com/asr/realtime"
+
+TARGET_SR = 16000
+CHANNELS = 1
+
+CHUNK_MS = 80
+CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
+SLEEP_SEC = CHUNK_MS / 1000.0
+
+# =========================
+# GLOBAL STATE
+# =========================
 websocket = None
- 
-# Audio stream
 stream = None
- 
-# Recording flag
 is_recording = False
- 
+
+# =========================
+# RECEIVE LOOP
+# =========================
 async def receive_data():
-    global websocket
-    while True:
-        try:
-            data = await websocket.recv()
-            if isinstance(data, str):
-                json_data = json.loads(data)
-                print(f"Data received from server: {json_data}")
-                if json_data.get("type") == "config" and json_data.get("audio_bytes_status") == "end":
-                    await send_audio_config()
-           
-        except websockets.exceptions.ConnectionClosed:
-            print("WebSocket connection closed")
-            # exit()
-            # break
- 
- 
+    try:
+        async for msg in websocket:
+            if isinstance(msg, str):
+                obj = json.loads(msg)
+                typ = obj.get("type")
+
+                if typ == "partial":
+                    txt = obj.get("text", "")
+                    print(f"\r[PARTIAL] {txt[:120]} ", end="", flush=True)
+
+                elif typ == "final":
+                    print(f"\n[FINAL] {obj.get('text')}")
+                    print(
+                        "[SERVER]",
+                        f"reason={obj.get('reason')}",
+                        f"ttf_ms={obj.get('ttf_ms')}",
+                        f"audio_ms={obj.get('audio_ms')}",
+                        f"rtf={obj.get('rtf')}",
+                        f"chunks={obj.get('chunks')}",
+                    )
+                else:
+                    print("[SERVER EVENT]", obj)
+
+    except websockets.exceptions.ConnectionClosed:
+        print("\n🔌 WebSocket closed")
+
+# =========================
+# CONNECT
+# =========================
 async def connect_websocket():
     global websocket
-    websocket = await websockets.connect(websocket_address)
-    print("WebSocket connection established")
- 
- 
-#ASR pipeline can be: "whisper" (default), "riva", "azure", "google"
-#In speech to speech pipeline nlpEngine is the Responder, can be: chatgpt, different agents
- 
-async def send_audio_config():
- 
+    websocket = await websockets.connect(
+        WEBSOCKET_ADDRESS,
+        max_size=None,
+    )
+    print(f"🔗 Connected to {WEBSOCKET_ADDRESS}")
+
+# =========================
+# SEND CONFIG (ONLY REQUIRED)
+# =========================
+async def send_audio_config(backend: str):
+    """
+    backend: "nemotron" | "whisper"
+    """
     audio_config = {
- "service": "asr", #"asr" (default), "s2s" (speech to speech)
- "asrPipeline":"riva", #riva, azure, google, default is whisper
- "nlpEngine":"healthcare-agent", #utility-agent, insurance-agent, banking-agent, healthcare-agent
- "ttsEngine":"polly", #polly, riva, azure, google
-    # "ttsVoice":"English-US.Male-1",
-    "tts_emotion_detection": False,
-    "user_speaking": True,
-     #"sampling_rate":16000,
-    "chunk_offset_seconds": 0.6,
-    "chunk_length_seconds": 1.8,
-    # "session_id":"AA-1b577f5f-0e19-4f3c-b423-dbe98197d352",
- 
- }
+        "type": "config",
+        "backend": backend,
+        "sampling_rate": TARGET_SR,
+        "chunk_ms": CHUNK_MS,
+    }
+
     await websocket.send(json.dumps(audio_config))
- 
+    print(f"📤 Sent config: {audio_config}")
+
+# =========================
+# MIC START
+# =========================
 async def start_recording():
     global stream, is_recording
-    is_recording = True
+
     p = pyaudio.PyAudio()
-    stream = p.open(format=pyaudio.paInt16, channels=channels, rate=sample_rate, input=True, frames_per_buffer=512)
-    print("Recording started")
- 
+    stream = p.open(
+        format=pyaudio.paInt16,
+        channels=CHANNELS,
+        rate=TARGET_SR,
+        input=True,
+        frames_per_buffer=CHUNK_FRAMES,
+    )
+
+    is_recording = True
+    print("🎤 Recording started (Ctrl+C to stop)")
+
+# =========================
+# MIC STOP + EOS
+# =========================
 async def stop_recording():
     global stream, is_recording
     is_recording = False
-    stream.stop_stream()
-    stream.close()
-    print("Recording stopped")
-   
-async def process_audio(sample_data):
+
     try:
-        await websocket.send(sample_data.tobytes())
-    
-    except Exception as e:
-        print(f'Error in process audio:*-{e}-*')
-     
- 
+        # trailing silence + EOS
+        await websocket.send(b"\x00\x00" * int(TARGET_SR * 0.8))
+        await asyncio.sleep(0.8)
+        await websocket.send(b"")
+    except Exception:
+        pass
+
+    if stream:
+        stream.stop_stream()
+        stream.close()
+
+    print("🛑 Recording stopped")
+
+# =========================
+# MAIN
+# =========================
 async def main():
     await connect_websocket()
-    await send_audio_config()
+
+    # 🔁 CHANGE THIS TO TEST
+    backend = "nemotron"
+    # backend = "whisper"
+
+    await send_audio_config(backend)
     await start_recording()
-   
-    receive_task = asyncio.create_task(receive_data())
- 
-    while is_recording:
-       
-        sample_data = np.frombuffer(stream.read(1024), dtype=np.int16)
-           
-        # print(sample_data)
-       
-        await process_audio(sample_data)
- 
-    await stop_recording()
-   
-    receive_task.cancel()
- 
- 
-asyncio.run(main())
- 
-(client_env) PS C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts> python ws_client.py
-[INFO] WebSocket connection established
-[INFO] Sent audio_config: {'service': 'asr', 'asrPipeline': 'nemotron', 'sampling_rate': 16000, 'channels': 1, 'chunk_offset_seconds': 0.08, 'chunk_length_seconds': 0.08, 'user_speaking': True, 'realtime': True}
-🎤 Recording started (Ctrl+C to stop)
 
-[INFO] WebSocket connection closed
+    recv_task = asyncio.create_task(receive_data())
 
-[ERROR] WebSocket closed while sending audio
+    try:
+        while True:
+            data = stream.read(CHUNK_FRAMES, exception_on_overflow=False)
+            pcm = np.frombuffer(data, dtype=np.int16)
+            await websocket.send(pcm.tobytes())
+            await asyncio.sleep(SLEEP_SEC)
+
+    except KeyboardInterrupt:
+        print("\n🧠 Keyboard interrupt")
+
+    finally:
+        await stop_recording()
+        recv_task.cancel()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+if __name__ == "__main__":
+    asyncio.run(main())

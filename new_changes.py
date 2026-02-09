@@ -230,3 +230,6 @@ COPY scripts /srv/scripts
 
 EXPOSE 8002
 CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
+
+DOCKER_BUILDKIT=1 docker build -t cx_asr_realtime --build-arg HTTP_PROXY=http://163.116.128.80:8080 --build-arg HTTPS_PROXY=http://163.116.128.80:8080 .
+

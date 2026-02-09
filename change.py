@@ -364,13 +364,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 
-python asr_realtime_benchmark_dual_trunc_pause.py ^
+python benchmarking.py ^
   --url ws://127.0.0.1:8002/ws/asr ^
   --data-wav-root "C:\path\to\datasets\data\wav" ^
   --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
   --max-files 30
 
-python asr_realtime_benchmark_dual_trunc_pause.py ^
+python benchmarking.py ^
   --url ws://127.0.0.1:8002/ws/asr ^
   --data-wav-root "C:\path\to\datasets\data\wav" ^
   --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
@@ -378,7 +378,7 @@ python asr_realtime_benchmark_dual_trunc_pause.py ^
   --max-files 20
 
 
-python asr_realtime_benchmark_dual_trunc_pause.py ^
+python benchmarking.py ^
   --url ws://127.0.0.1:8002/ws/asr ^
   --data-wav-root "C:\path\to\datasets\data\wav" ^
   --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
@@ -386,7 +386,7 @@ python asr_realtime_benchmark_dual_trunc_pause.py ^
   --max-files 30
 
 
-python asr_realtime_benchmark_dual_trunc_pause.py ^
+python benchmarking.py ^
   --url ws://127.0.0.1:8002/ws/asr ^
   --data-wav-root "C:\path\to\datasets\data\wav" ^
   --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^

@@ -7,7 +7,7 @@ import numpy as np
 # =========================
 # CONFIG
 # =========================
-WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/ws/asr"
+WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/asr/realtime-custom-vad"
 # WEBSOCKET_ADDRESS = "wss://cx-asr.exlservice.com/asr/realtime"
 
 TARGET_SR = 16000

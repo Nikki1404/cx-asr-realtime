@@ -18,6 +18,12 @@ CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 SLEEP_SEC = CHUNK_MS / 1000.0
 
 # =========================
+# 🔥 WHISPER FAST FLUSH CONFIG (ADDED)
+# =========================
+WHISPER_FLUSH_INTERVAL_SEC = 1.2   # how often to force flush
+WHISPER_FLUSH_SILENCE_MS = 160     # silence duration
+
+# =========================
 # GLOBAL STATE
 # =========================
 websocket = None
@@ -127,20 +133,37 @@ async def stop_recording():
 async def main():
     await connect_websocket()
 
-    #  CHANGE THIS TO TEST
+    # 🔁 CHANGE THIS TO TEST
     backend = "whisper"
-    # backend = "whisper"
+    # backend = "nemotron"
 
     await send_audio_config(backend)
     await start_recording()
 
     recv_task = asyncio.create_task(receive_data())
 
+    # 🔥 ADDED STATE (SAFE)
+    last_flush_time = asyncio.get_event_loop().time()
+
     try:
         while True:
             data = stream.read(CHUNK_FRAMES, exception_on_overflow=False)
             pcm = np.frombuffer(data, dtype=np.int16)
             await websocket.send(pcm.tobytes())
+
+            # =========================
+            # 🔥 WHISPER FAST FLUSH ONLY
+            # =========================
+            if backend == "whisper":
+                now = asyncio.get_event_loop().time()
+                if now - last_flush_time >= WHISPER_FLUSH_INTERVAL_SEC:
+                    silence_frames = int(
+                        TARGET_SR * (WHISPER_FLUSH_SILENCE_MS / 1000.0)
+                    )
+                    silence = b"\x00\x00" * silence_frames
+                    await websocket.send(silence)
+                    last_flush_time = now
+
             await asyncio.sleep(SLEEP_SEC)
 
     except KeyboardInterrupt:

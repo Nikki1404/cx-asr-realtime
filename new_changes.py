@@ -233,3 +233,49 @@ CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
 
 DOCKER_BUILDKIT=1 docker build -t cx_asr_realtime --build-arg HTTP_PROXY=http://163.116.128.80:8080 --build-arg HTTPS_PROXY=http://163.116.128.80:8080 .
 
+51.85 Requirement already satisfied: sentencepiece<1.0.0 in /usr/local/lib/python3.10/dist-packages (from nemo_toolkit @ git+https://github.com/NVIDIA/NeMo.git@v1.23.0->nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@v1.23.0) (0.2.1)
+51.88 Collecting youtokentome>=1.0.5 (from nemo_toolkit @ git+https://github.com/NVIDIA/NeMo.git@v1.23.0->nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@v1.23.0)
+51.90   Downloading youtokentome-1.0.6.tar.gz (86 kB)
+51.93   Preparing metadata (pyproject.toml): started
+52.08   Preparing metadata (pyproject.toml): finished with status 'error'
+52.09   error: subprocess-exited-with-error
+52.09
+52.09   × Preparing metadata (pyproject.toml) did not run successfully.
+52.09   │ exit code: 1
+52.09   ╰─> [15 lines of output]
+52.09       Traceback (most recent call last):
+52.09         File "/usr/local/lib/python3.10/dist-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 389, in <module>
+52.09           main()
+52.09         File "/usr/local/lib/python3.10/dist-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 373, in main
+52.09           json_out["return_val"] = hook(**hook_input["kwargs"])
+52.09         File "/usr/local/lib/python3.10/dist-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 175, in prepare_metadata_for_build_wheel
+52.09           return hook(metadata_directory, config_settings)
+52.09         File "/usr/local/lib/python3.10/dist-packages/setuptools/build_meta.py", line 380, in prepare_metadata_for_build_wheel
+52.09           self.run_setup()
+52.09         File "/usr/local/lib/python3.10/dist-packages/setuptools/build_meta.py", line 520, in run_setup
+52.09           super().run_setup(setup_script=setup_script)
+52.09         File "/usr/local/lib/python3.10/dist-packages/setuptools/build_meta.py", line 317, in run_setup
+52.09           exec(code, locals())
+52.09         File "<string>", line 5, in <module>
+52.09       ModuleNotFoundError: No module named 'Cython'
+52.09       [end of output]
+52.09
+52.09   note: This error originates from a subprocess, and is likely not a problem with pip.
+52.24 error: metadata-generation-failed
+52.24
+52.24 × Encountered error while generating package metadata.
+52.24 ╰─> youtokentome
+52.24
+52.24 note: This is an issue with the package mentioned above, not pip.
+52.24 hint: See above for details.
+------
+Dockerfile:68
+--------------------
+  67 |     # -------------------------
+  68 | >>> RUN --mount=type=cache,target=/root/.cache/pip \
+  69 | >>>     python3.10 -m pip install --no-cache-dir --no-build-isolation \
+  70 | >>>       "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@v1.23.0"
+  71 |
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c python3.10 -m pip install --no-cache-dir --no-build-isolation       \"nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@v1.23.0\"" did not complete successfully: exit code: 1
+(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime_updated#

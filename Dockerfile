@@ -1,8 +1,30 @@
-FROM nvidia/cuda:13.4.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
-ENV https_proxy="http://163.116.128.80:8080"
-ENV http_proxy="http://163.116.128.80:8080"
+# ============================
+# Build & Runtime proxy control
+# ============================
+ARG USE_PROXY=false
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
 
+# Empty by default (K8s-safe)
+ENV http_proxy=""
+ENV https_proxy=""
+
+# Enable proxy ONLY if explicitly requested
+RUN if [ "$USE_PROXY" = "true" ]; then \
+        echo "🔐 Enabling proxy"; \
+        export http_proxy=${HTTP_PROXY}; \
+        export https_proxy=${HTTPS_PROXY}; \
+        echo "http_proxy=${HTTP_PROXY}" >> /etc/environment; \
+        echo "https_proxy=${HTTPS_PROXY}" >> /etc/environment; \
+    else \
+        echo "🌐 Proxy disabled"; \
+    fi
+
+# ============================
+# Runtime environment
+# ============================
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -14,8 +36,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /srv
 
+# ============================
+# System dependencies
+# ============================
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
+    python3.10 \
     python3-pip \
     python3-dev \
     git \
@@ -26,22 +51,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install -U pip setuptools wheel
+# ============================
+# Python tooling
+# ============================
+RUN python3.10 -m pip install -U pip setuptools wheel
 
+# ============================
+# App dependencies (NumPy < 2)
+# ============================
 COPY requirements.txt /srv/requirements.txt
-RUN python3 -m pip install --no-cache-dir -r /srv/requirements.txt
+RUN python3.10 -m pip install --no-cache-dir -r /srv/requirements.txt
 
-RUN python3 -m pip install --no-cache-dir \
+# ============================
+# NeMo (same behavior as working image)
+# ============================
+RUN python3.10 -m pip install --no-cache-dir \
     "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main"
 
-RUN python3 -m pip install --no-cache-dir --force-reinstall \
+# ============================
+# Torch LAST (lock CUDA ABI)
+# ============================
+RUN python3.10 -m pip install --no-cache-dir --force-reinstall \
     --index-url https://download.pytorch.org/whl/cu124 \
     torch==2.5.1 \
     torchaudio==2.5.1
 
+# ============================
+# Application code
+# ============================
 COPY app /srv/app
 COPY scripts /srv/scripts
 
 EXPOSE 8002
-CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
-                                                                     
+
+CMD ["python3.10", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]

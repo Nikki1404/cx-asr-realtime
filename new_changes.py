@@ -251,3 +251,41 @@ COPY --chown=appuser:appuser scripts ./scripts
 
 EXPOSE 8002
 CMD ["python3.10", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
+
+ => ERROR [builder 11/11] RUN python3.10 - << 'PY'                                                                11.3s
+------
+ > [builder 11/11] RUN python3.10 - << 'PY':
+1.298 /usr/local/lib/python3.10/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+1.298   import pynvml  # type: ignore[import]
+2.163 /usr/local/lib/python3.10/dist-packages/transformers/utils/hub.py:124: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+2.163   warnings.warn(
+10.15 Traceback (most recent call last):
+10.15   File "<stdin>", line 2, in <module>
+10.15   File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/__init__.py", line 15, in <module>
+10.15     from nemo.collections.asr import data, losses, models, modules
+10.15   File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/models/__init__.py", line 18, in <module>
+10.15     from nemo.collections.asr.models.classification_models import EncDecClassificationModel, EncDecFrameClassificationModel
+10.15   File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/models/classification_models.py", line 29, in <module>
+10.15     from nemo.collections.asr.data import audio_to_label_dataset, feature_to_label_dataset
+10.15   File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/data/audio_to_label_dataset.py", line 19, in <module>
+10.15     from nemo.collections.asr.data.audio_to_text_dataset import convert_to_config_list, get_chain_dataset
+10.15   File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/data/audio_to_text_dataset.py", line 28, in <module>
+10.15     from nemo.collections.asr.data.huggingface.hf_audio_to_text_dataset import (
+10.15   File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/data/huggingface/hf_audio_to_text_dataset.py", line 17, in <module>
+10.15     from nemo.collections.asr.data.huggingface.hf_audio_to_text import (
+10.15   File "/usr/local/lib/python3.10/dist-packages/nemo/collections/asr/data/huggingface/hf_audio_to_text.py", line 17, in <module>
+10.15     import datasets as hf_datasets
+10.15   File "/usr/local/lib/python3.10/dist-packages/datasets/__init__.py", line 22, in <module>
+10.15     from .arrow_dataset import Dataset
+10.15   File "/usr/local/lib/python3.10/dist-packages/datasets/arrow_dataset.py", line 67, in <module>
+10.15     from .arrow_writer import ArrowWriter, OptimizedTypedSequence
+10.15   File "/usr/local/lib/python3.10/dist-packages/datasets/arrow_writer.py", line 27, in <module>
+10.15     from .features import Features, Image, Value
+10.15   File "/usr/local/lib/python3.10/dist-packages/datasets/features/__init__.py", line 18, in <module>
+10.15     from .features import Array2D, Array3D, Array4D, Array5D, ClassLabel, Features, Sequence, Value
+10.15   File "/usr/local/lib/python3.10/dist-packages/datasets/features/features.py", line 634, in <module>
+10.15     class _ArrayXDExtensionType(pa.PyExtensionType):
+10.15 AttributeError: module 'pyarrow' has no attribute 'PyExtensionType'. Did you mean: 'ExtensionType'?
+------
+Dockerfile:77
+--------------------

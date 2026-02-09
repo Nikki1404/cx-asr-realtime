@@ -371,7 +371,7 @@ python benchmarking.py ^
   --max-files 30
 
 python benchmarking.py ^
-  --url ws://127.0.0.1:8002/ws/asr ^
+  --url ws://127.0.0.1:8002/asr/realtime-custom-vad ^
   --data-wav-root "C:\path\to\datasets\data\wav" ^
   --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
   --inject-pause "2.0:0.6,5.0:1.0" ^
@@ -379,7 +379,7 @@ python benchmarking.py ^
 
 
 python benchmarking.py ^
-  --url ws://127.0.0.1:8002/ws/asr ^
+  --url ws://127.0.0.1:8002/asr/realtime-custom-vad ^
   --data-wav-root "C:\path\to\datasets\data\wav" ^
   --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
   --fast ^
@@ -387,7 +387,7 @@ python benchmarking.py ^
 
 
 python benchmarking.py ^
-  --url ws://127.0.0.1:8002/ws/asr ^
+  --url ws://127.0.0.1:8002/asr/realtime-custom-vad ^
   --data-wav-root "C:\path\to\datasets\data\wav" ^
   --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" ^
   --workers 4 ^

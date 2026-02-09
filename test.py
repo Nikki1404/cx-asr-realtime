@@ -1,3 +1,4 @@
+we need to emove the --mic option and the interactive way to choose whisper/nemotron
 import asyncio
 import websockets
 import json

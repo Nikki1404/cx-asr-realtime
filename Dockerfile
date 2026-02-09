@@ -85,3 +85,10 @@ COPY scripts /srv/scripts
 EXPOSE 8002
 
 CMD ["python3.10", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
+
+docker run --gpus all \
+  -e http_proxy=http://163.116.128.80:8080 \
+  -e https_proxy=http://163.116.128.80:8080 \
+  -p 8002:8002 \
+  cx_asr_realtime
+

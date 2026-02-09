@@ -121,3 +121,17 @@ COPY scripts /srv/scripts
 EXPOSE 8002
 
 CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
+
+
+docker build \
+  --build-arg USE_PROXY=true \
+  --build-arg HTTP_PROXY=http://163.116.128.80:8080 \
+  --build-arg HTTPS_PROXY=http://163.116.128.80:8080 \
+  -t cx_asr_realtime .
+
+docker run --gpus all -p 8002:8002 \
+  -e USE_PROXY=true \
+  -e HTTP_PROXY=http://163.116.128.80:8080 \
+  -e HTTPS_PROXY=http://163.116.128.80:8080 \
+  cx_asr_realtime
+

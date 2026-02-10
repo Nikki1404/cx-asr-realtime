@@ -369,16 +369,246 @@ python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-
 python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-wav-root "C:\path\to\datasets\data\wav" --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech"--workers 4 --max-files 20
 
 
-run_id = str(uuid.uuid4())
-out_path = Path(args.out)
-out_file = out_path.with_name(
-    f"{out_path.stem}_{run_id}{out_path.suffix}"
-)
+import argparse
+import asyncio
+import csv
+import json
+import time
+import uuid
+import wave
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, List
 
-with open(out_file, "w", newline="", encoding="utf-8") as f:
-    w = csv.writer(f)
-    w.writerow(BenchResult.__dataclass_fields__.keys())
-    for r in results:
-        w.writerow(r.__dict__.values())
+import jiwer
+import numpy as np
+import websockets
 
-print(f"\nSaved → {out_file}")
+# =========================
+# AUDIO CONFIG
+# =========================
+TARGET_SR = 16000
+CHUNK_MS = 80
+CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
+SLEEP_SEC = CHUNK_MS / 1000.0
+
+# =========================
+# TEXT NORMALIZATION
+# =========================
+transform = jiwer.Compose([
+    jiwer.ToLowerCase(),
+    jiwer.RemovePunctuation(),
+    jiwer.RemoveMultipleSpaces(),
+    jiwer.Strip(),
+    jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
+])
+
+# =========================
+# RESULT SCHEMA
+# =========================
+@dataclass
+class BenchRow:
+    subset: str
+    wav_file: str
+    backend: str
+    latency_ms: Optional[int]
+    wer: Optional[float]
+    reference_text: str
+    predicted_text: str
+    error: Optional[str] = None
+
+# =========================
+# LIBRISPEECH REF LOOKUP
+# =========================
+def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
+    utt_id = wav_path.stem
+    rel = wav_path.relative_to(wav_root)
+    subset, spk, chap = rel.parts[:3]
+
+    trans_file = raw_root / subset / spk / chap / f"{spk}-{chap}.trans.txt"
+    if not trans_file.exists():
+        return ""
+
+    with open(trans_file, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith(utt_id + " "):
+                return line.strip().split(" ", 1)[1]
+    return ""
+
+# =========================
+# WAV STREAMER
+# =========================
+def iter_pcm_chunks(wav_path: Path):
+    with wave.open(str(wav_path), "rb") as wf:
+        assert wf.getframerate() == 16000
+        assert wf.getnchannels() == 1
+        assert wf.getsampwidth() == 2
+
+        while True:
+            chunk = wf.readframes(CHUNK_FRAMES)
+            if not chunk:
+                break
+            yield chunk
+
+# =========================
+# TRANSCRIBE ONE WAV (REALTIME)
+# =========================
+async def transcribe_realtime(
+    *,
+    url: str,
+    backend: str,
+    wav_path: Path,
+) -> dict:
+
+    t_connect0 = time.time()
+    async with websockets.connect(url, max_size=None) as ws:
+        connect_ms = int((time.time() - t_connect0) * 1000)
+
+        # send config
+        await ws.send(json.dumps({
+            "type": "config",
+            "backend": backend,
+            "sampling_rate": TARGET_SR,
+            "chunk_ms": CHUNK_MS,
+        }))
+
+        final_text = ""
+        t_final = None
+        t_stream_start = time.time()
+
+        async def receiver():
+            nonlocal final_text, t_final
+            async for msg in ws:
+                if isinstance(msg, str):
+                    obj = json.loads(msg)
+                    if obj.get("type") == "final":
+                        final_text = (obj.get("text") or "").strip()
+                        t_final = time.time()
+                        return
+
+        recv_task = asyncio.create_task(receiver())
+
+        # stream audio like realtime mic
+        for chunk in iter_pcm_chunks(wav_path):
+            await ws.send(chunk)
+            await asyncio.sleep(SLEEP_SEC)
+
+        # force finalize
+        await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
+        await asyncio.sleep(0.8)
+        await ws.send(b"")
+
+        await asyncio.wait_for(recv_task, timeout=30)
+
+        latency_ms = int((t_final - t_stream_start) * 1000) if t_final else None
+
+        return {
+            "latency_ms": latency_ms,
+            "text": final_text,
+        }
+
+# =========================
+# PROCESS ONE WAV + ONE MODEL
+# =========================
+async def process_one(
+    *,
+    wav_path: Path,
+    backend: str,
+    url: str,
+    wav_root: Path,
+    raw_root: Path,
+) -> BenchRow:
+
+    subset = wav_path.relative_to(wav_root).parts[0]
+    ref = get_reference_text(wav_path, wav_root, raw_root)
+
+    try:
+        out = await transcribe_realtime(
+            url=url,
+            backend=backend,
+            wav_path=wav_path,
+        )
+
+        hyp = out["text"]
+        wer = jiwer.wer(ref, hyp, transform, transform) if ref and hyp else None
+
+        return BenchRow(
+            subset=subset,
+            wav_file=wav_path.name,
+            backend=backend,
+            latency_ms=out["latency_ms"],
+            wer=round(float(wer), 4) if wer is not None else None,
+            reference_text=ref,
+            predicted_text=hyp,
+        )
+
+    except Exception as e:
+        return BenchRow(
+            subset=subset,
+            wav_file=wav_path.name,
+            backend=backend,
+            latency_ms=None,
+            wer=None,
+            reference_text=ref,
+            predicted_text="",
+            error=str(e),
+        )
+
+# =========================
+# DUAL MODEL (PARALLEL)
+# =========================
+async def process_dual(**kwargs) -> List[BenchRow]:
+    return await asyncio.gather(
+        process_one(backend="nemotron", **kwargs),
+        process_one(backend="whisper", **kwargs),
+    )
+
+# =========================
+# MAIN
+# =========================
+async def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
+    p.add_argument("--data-wav-root", required=True)
+    p.add_argument("--raw-librispeech-root", required=True)
+    p.add_argument("--max-files", type=int, default=20)
+    p.add_argument("--workers", type=int, default=1)
+    args = p.parse_args()
+
+    wav_root = Path(args.data_wav_root)
+    raw_root = Path(args.raw_librispeech_root)
+
+    wavs = sorted(wav_root.rglob("*.wav"))[: args.max_files]
+
+    sem = asyncio.Semaphore(args.workers)
+    results: List[BenchRow] = []
+
+    async def run_one(wav):
+        async with sem:
+            rows = await process_dual(
+                wav_path=wav,
+                url=args.url,
+                wav_root=wav_root,
+                raw_root=raw_root,
+            )
+            return rows
+
+    tasks = [asyncio.create_task(run_one(w)) for w in wavs]
+    for fut in asyncio.as_completed(tasks):
+        rows = await fut
+        results.extend(rows)
+        for r in rows:
+            print(f"{r.backend:9s} {r.wav_file} latency={r.latency_ms}ms WER={r.wer}")
+
+    out_csv = f"realtime_benchmark_{uuid.uuid4().hex[:8]}.csv"
+
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(BenchRow.__dataclass_fields__.keys())
+        for r in results:
+            w.writerow(r.__dict__.values())
+
+    print(f"\n✅ Saved results → {out_csv}")
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -390,7 +390,7 @@ import uuid
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple
 
 import jiwer
 import numpy as np
@@ -402,7 +402,6 @@ import websockets
 TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
-SLEEP_SEC = CHUNK_MS / 1000.0
 
 # =========================
 # TEXT NORMALIZATION
@@ -423,14 +422,13 @@ class BenchResult:
     subset: str
     file: str
     backend: str
-    trunc_sec: Optional[int]
 
+    latency_ms: int
     audio_sec_sent: float
+
     ref_text: str
     hyp_text: str
     wer: Optional[float]
-
-    latency_ms: Optional[int]
 
     error: Optional[str] = None
 
@@ -455,17 +453,13 @@ def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
 # =========================
 # WAV HELPERS
 # =========================
-def read_wav_info(path: Path):
-    with wave.open(str(path), "rb") as wf:
-        return wf.getframerate(), wf.getnchannels(), wf.getsampwidth()
-
 def iter_wav_chunks(path: Path):
     with wave.open(str(path), "rb") as wf:
         while True:
-            d = wf.readframes(CHUNK_FRAMES)
-            if not d:
+            data = wf.readframes(CHUNK_FRAMES)
+            if not data:
                 break
-            yield d
+            yield data
 
 def silence_bytes(sec: float) -> bytes:
     return b"\x00\x00" * int(TARGET_SR * sec)
@@ -474,6 +468,9 @@ def silence_bytes(sec: float) -> bytes:
 # PAUSE PARSER
 # =========================
 def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
+    """
+    "2.0:0.5,5.0:1.0"
+    """
     if not spec:
         return []
     out = []
@@ -483,20 +480,19 @@ def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
     return sorted(out)
 
 # =========================
-# WS TRANSCRIPTION
+# STREAM + TRANSCRIBE
 # =========================
 async def transcribe_ws(
     *,
     url: str,
     backend: str,
     wav_path: Path,
-    truncate_sec: Optional[int],
     pause_plan: List[Tuple[float, float]],
-    realtime: bool,
-) -> Dict:
+) -> Tuple[str, float, int]:
 
-    t_conn0 = time.time()
     async with websockets.connect(url, max_size=None) as ws:
+
+        # Send config
         await ws.send(json.dumps({
             "type": "config",
             "backend": backend,
@@ -504,41 +500,30 @@ async def transcribe_ws(
             "chunk_ms": CHUNK_MS,
         }))
 
-        t_stream_start = time.time()
-        t_final = None
         finals = []
+        final_received = asyncio.Event()
 
         async def receiver():
-            nonlocal t_final
-            while True:
-                try:
-                    msg = await ws.recv()
-                except:
-                    return
-                obj = json.loads(msg)
-                if obj.get("type") == "final":
-                    t_final = time.time()
-                    if obj.get("text"):
-                        finals.append(obj["text"].strip())
+            async for msg in ws:
+                if isinstance(msg, str):
+                    obj = json.loads(msg)
+                    if obj.get("type") == "final":
+                        if obj.get("text"):
+                            finals.append(obj["text"].strip())
+                        final_received.set()
 
         recv_task = asyncio.create_task(receiver())
-
-        sr, ch, sw = read_wav_info(wav_path)
-        assert sr == 16000 and ch == 1 and sw == 2
 
         frames_sent = 0
         audio_sec_sent = 0.0
         pause_idx = 0
 
-        for chunk in iter_wav_chunks(wav_path):
-            if truncate_sec is not None and audio_sec_sent >= truncate_sec:
-                break
+        t_start = time.time()
 
+        for chunk in iter_wav_chunks(wav_path):
             while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
                 dur = pause_plan[pause_idx][1]
                 await ws.send(silence_bytes(dur))
-                if realtime:
-                    await asyncio.sleep(dur)
                 frames_sent += int(TARGET_SR * dur)
                 audio_sec_sent = frames_sent / TARGET_SR
                 pause_idx += 1
@@ -547,23 +532,18 @@ async def transcribe_ws(
             frames_sent += len(chunk) // 2
             audio_sec_sent = frames_sent / TARGET_SR
 
-            if realtime:
-                await asyncio.sleep(SLEEP_SEC)
-
+        # finalize
         await ws.send(silence_bytes(0.6))
-        if realtime:
-            await asyncio.sleep(0.6)
         await ws.send(b"")
 
-        await asyncio.wait_for(recv_task, timeout=30)
+        await asyncio.wait_for(final_received.wait(), timeout=30)
 
-        latency_ms = int((t_final - t_stream_start) * 1000) if t_final else None
+        latency_ms = int((time.time() - t_start) * 1000)
 
-        return {
-            "audio_sec": audio_sec_sent,
-            "latency_ms": latency_ms,
-            "final_text": " ".join(finals),
-        }
+        await ws.close()
+        recv_task.cancel()
+
+        return " ".join(finals), audio_sec_sent, latency_ms
 
 # =========================
 # SINGLE BACKEND
@@ -572,40 +552,37 @@ async def process_one(
     *,
     wav_path: Path,
     backend: str,
-    truncate_sec: Optional[int],
     url: str,
     wav_root: Path,
     raw_root: Path,
     pause_plan: List[Tuple[float, float]],
-    realtime: bool,
 ) -> BenchResult:
 
     subset = wav_path.relative_to(wav_root).parts[0]
     ref = get_reference_text(wav_path, wav_root, raw_root)
 
     try:
-        out = await transcribe_ws(
+        hyp, audio_sec, latency_ms = await transcribe_ws(
             url=url,
             backend=backend,
             wav_path=wav_path,
-            truncate_sec=truncate_sec,
             pause_plan=pause_plan,
-            realtime=realtime,
         )
 
-        hyp = out["final_text"]
-        wer = jiwer.wer(ref, hyp, transform, transform) if ref and hyp else None
+        wer = None
+        if ref and hyp:
+            wer = jiwer.wer(ref, hyp, transform, transform)
+            wer = round(float(wer), 4)
 
         return BenchResult(
             subset=subset,
             file=wav_path.name,
             backend=backend,
-            trunc_sec=truncate_sec,
-            audio_sec_sent=round(out["audio_sec"], 3),
+            latency_ms=latency_ms,
+            audio_sec_sent=round(audio_sec, 3),
             ref_text=ref,
             hyp_text=hyp,
-            wer=round(float(wer), 4) if wer is not None else None,
-            latency_ms=out["latency_ms"],
+            wer=wer,
         )
 
     except Exception as e:
@@ -613,12 +590,11 @@ async def process_one(
             subset=subset,
             file=wav_path.name,
             backend=backend,
-            trunc_sec=truncate_sec,
+            latency_ms=0,
             audio_sec_sent=0.0,
             ref_text=ref,
             hyp_text="",
             wer=None,
-            latency_ms=None,
             error=str(e),
         )
 
@@ -639,11 +615,8 @@ async def main():
     p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
     p.add_argument("--data-wav-root", required=True)
     p.add_argument("--raw-librispeech-root", required=True)
-    p.add_argument("--max-files", type=int, default=30)
-    p.add_argument("--workers", type=int, default=1)
-    p.add_argument("--fast", action="store_true")
+    p.add_argument("--max-files", type=int, default=20)
     p.add_argument("--inject-pause", default="")
-    p.add_argument("--truncate-sec", default="")
     args = p.parse_args()
 
     wav_root = Path(args.data_wav_root)
@@ -651,46 +624,29 @@ async def main():
     wavs = sorted(wav_root.rglob("*.wav"))[: args.max_files]
 
     pause_plan = parse_pause_spec(args.inject_pause)
-
-    if args.truncate_sec.strip():
-        truncations = [int(x.strip()) for x in args.truncate_sec.split(",")]
-    else:
-        truncations = [None]
-
-    sem = asyncio.Semaphore(args.workers)
     results: List[BenchResult] = []
 
-    async def run_one(wav, trunc):
-        async with sem:
-            return await process_one_dual(
-                wav_path=wav,
-                truncate_sec=trunc,
-                url=args.url,
-                wav_root=wav_root,
-                raw_root=raw_root,
-                pause_plan=pause_plan,
-                realtime=not args.fast,
-            )
+    for wav in wavs:
+        dual = await process_one_dual(
+            wav_path=wav,
+            url=args.url,
+            wav_root=wav_root,
+            raw_root=raw_root,
+            pause_plan=pause_plan,
+        )
+        results.extend(dual)
 
-    for trunc in truncations:
-        label = "FULL" if trunc is None else f"{trunc}s"
-        print(f"\n=== Truncation {label} | pause={pause_plan} ===")
+        for r in dual:
+            print(f"{r.backend:9s} {r.file} latency={r.latency_ms}ms wer={r.wer}")
 
-        tasks = [asyncio.create_task(run_one(w, trunc)) for w in wavs]
-        for fut in asyncio.as_completed(tasks):
-            pair = await fut
-            results.extend(pair)
-            for r in pair:
-                print(f"{r.backend:9s} {r.file} latency={r.latency_ms}ms wer={r.wer}")
-
-    out_csv = f"bench_realtime_dual_{uuid.uuid4().hex}.csv"
+    out_csv = f"bench_realtime_dual_{uuid.uuid4().hex[:8]}.csv"
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(BenchResult.__dataclass_fields__.keys())
         for r in results:
             w.writerow(r.__dict__.values())
 
-    print(f"\n Saved → {out_csv}")
+    print(f"\nSaved → {out_csv}")
 
 if __name__ == "__main__":
     asyncio.run(main())

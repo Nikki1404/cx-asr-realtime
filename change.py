@@ -368,6 +368,14 @@ python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-
 
 python benchmarking.py --url ws://127.0.0.1:8002/asr/realtime-custom-vad --data-wav-root "C:\path\to\datasets\data\wav" --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech"--workers 4 --max-files 20
 
+python asr_realtime_benchmark_realtime_dual.py ^
+  --url ws://127.0.0.1:8002/ws/asr ^
+  --data-wav-root "C:\...\datasets\data\wav" ^
+  --raw-librispeech-root "C:\...\datasets\data\raw\LibriSpeech" ^
+  --max-files 30 ^
+  --workers 1
+
+
 
 import argparse
 import asyncio
@@ -378,7 +386,7 @@ import uuid
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import jiwer
 import numpy as np
@@ -390,7 +398,6 @@ import websockets
 TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
-SLEEP_SEC = CHUNK_MS / 1000.0
 
 # =========================
 # TEXT NORMALIZATION
@@ -407,64 +414,63 @@ transform = jiwer.Compose([
 # RESULT SCHEMA
 # =========================
 @dataclass
-class BenchRow:
+class BenchResult:
     subset: str
-    wav_file: str
+    file: str
     backend: str
+    trunc_sec: int
     latency_ms: Optional[int]
+    audio_sec_sent: float
     wer: Optional[float]
-    reference_text: str
-    predicted_text: str
+    ref_text: str
+    hyp_text: str
     error: Optional[str] = None
 
 # =========================
-# LIBRISPEECH REF LOOKUP
+# REFERENCE LOOKUP
 # =========================
 def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
-    utt_id = wav_path.stem
     rel = wav_path.relative_to(wav_root)
     subset, spk, chap = rel.parts[:3]
+    utt = wav_path.stem
 
-    trans_file = raw_root / subset / spk / chap / f"{spk}-{chap}.trans.txt"
-    if not trans_file.exists():
+    trans = raw_root / subset / spk / chap / f"{spk}-{chap}.trans.txt"
+    if not trans.exists():
         return ""
 
-    with open(trans_file, "r", encoding="utf-8") as f:
+    with open(trans, "r", encoding="utf-8") as f:
         for line in f:
-            if line.startswith(utt_id + " "):
+            if line.startswith(utt + " "):
                 return line.strip().split(" ", 1)[1]
     return ""
 
 # =========================
-# WAV STREAMER
+# WAV HELPERS
 # =========================
-def iter_pcm_chunks(wav_path: Path):
-    with wave.open(str(wav_path), "rb") as wf:
-        assert wf.getframerate() == 16000
-        assert wf.getnchannels() == 1
-        assert wf.getsampwidth() == 2
-
+def iter_wav_chunks(path: Path):
+    with wave.open(str(path), "rb") as wf:
         while True:
-            chunk = wf.readframes(CHUNK_FRAMES)
-            if not chunk:
+            data = wf.readframes(CHUNK_FRAMES)
+            if not data:
                 break
-            yield chunk
+            yield data
+
+def silence_bytes(sec: float) -> bytes:
+    return b"\x00\x00" * int(TARGET_SR * sec)
 
 # =========================
-# TRANSCRIBE ONE WAV (REALTIME)
+# WS TRANSCRIPTION
 # =========================
-async def transcribe_realtime(
+async def transcribe_ws(
     *,
     url: str,
     backend: str,
     wav_path: Path,
+    trunc_sec: int,
+    pause_plan: List[Tuple[float, float]],
 ) -> dict:
 
-    t_connect0 = time.time()
     async with websockets.connect(url, max_size=None) as ws:
-        connect_ms = int((time.time() - t_connect0) * 1000)
-
-        # send config
         await ws.send(json.dumps({
             "type": "config",
             "backend": backend,
@@ -473,91 +479,119 @@ async def transcribe_realtime(
         }))
 
         final_text = ""
-        t_final = None
-        t_stream_start = time.time()
+        first_chunk_time = None
+        final_time = None
+        frames_sent = 0
+        audio_sec_sent = 0.0
+        pause_idx = 0
 
         async def receiver():
-            nonlocal final_text, t_final
+            nonlocal final_text, final_time
             async for msg in ws:
-                if isinstance(msg, str):
-                    obj = json.loads(msg)
-                    if obj.get("type") == "final":
-                        final_text = (obj.get("text") or "").strip()
-                        t_final = time.time()
-                        return
+                obj = json.loads(msg)
+                if obj.get("type") == "final":
+                    final_text = obj.get("text", "")
+                    final_time = time.time()
+                    return
 
         recv_task = asyncio.create_task(receiver())
 
-        # stream audio like realtime mic
-        for chunk in iter_pcm_chunks(wav_path):
-            await ws.send(chunk)
-            await asyncio.sleep(SLEEP_SEC)
+        for chunk in iter_wav_chunks(wav_path):
+            if audio_sec_sent >= trunc_sec:
+                break
 
-        # force finalize
-        await ws.send(b"\x00\x00" * int(TARGET_SR * 0.8))
-        await asyncio.sleep(0.8)
+            if first_chunk_time is None:
+                first_chunk_time = time.time()
+
+            # pause injection
+            while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
+                dur = pause_plan[pause_idx][1]
+                await ws.send(silence_bytes(dur))
+                frames_sent += int(TARGET_SR * dur)
+                audio_sec_sent = frames_sent / TARGET_SR
+                pause_idx += 1
+
+            await ws.send(chunk)
+            frames_sent += len(chunk) // 2
+            audio_sec_sent = frames_sent / TARGET_SR
+
+        # finalize
+        await ws.send(silence_bytes(0.5))
         await ws.send(b"")
 
-        await asyncio.wait_for(recv_task, timeout=30)
+        await recv_task
 
-        latency_ms = int((t_final - t_stream_start) * 1000) if t_final else None
+        latency_ms = (
+            int((final_time - first_chunk_time) * 1000)
+            if first_chunk_time and final_time
+            else None
+        )
 
         return {
             "latency_ms": latency_ms,
+            "audio_sec": audio_sec_sent,
             "text": final_text,
         }
 
 # =========================
-# PROCESS ONE WAV + ONE MODEL
+# SINGLE BACKEND
 # =========================
 async def process_one(
     *,
     wav_path: Path,
     backend: str,
+    trunc_sec: int,
     url: str,
     wav_root: Path,
     raw_root: Path,
-) -> BenchRow:
+    pause_plan: List[Tuple[float, float]],
+) -> BenchResult:
 
     subset = wav_path.relative_to(wav_root).parts[0]
     ref = get_reference_text(wav_path, wav_root, raw_root)
 
     try:
-        out = await transcribe_realtime(
+        out = await transcribe_ws(
             url=url,
             backend=backend,
             wav_path=wav_path,
+            trunc_sec=trunc_sec,
+            pause_plan=pause_plan,
         )
 
         hyp = out["text"]
         wer = jiwer.wer(ref, hyp, transform, transform) if ref and hyp else None
 
-        return BenchRow(
+        return BenchResult(
             subset=subset,
-            wav_file=wav_path.name,
+            file=wav_path.name,
             backend=backend,
+            trunc_sec=trunc_sec,
             latency_ms=out["latency_ms"],
+            audio_sec_sent=round(out["audio_sec"], 2),
             wer=round(float(wer), 4) if wer is not None else None,
-            reference_text=ref,
-            predicted_text=hyp,
+            ref_text=ref,
+            hyp_text=hyp,
         )
 
     except Exception as e:
-        return BenchRow(
+        return BenchResult(
             subset=subset,
-            wav_file=wav_path.name,
+            file=wav_path.name,
             backend=backend,
+            trunc_sec=trunc_sec,
             latency_ms=None,
+            audio_sec_sent=0.0,
             wer=None,
-            reference_text=ref,
-            predicted_text="",
+            ref_text=ref,
+            hyp_text="",
             error=str(e),
         )
 
 # =========================
-# DUAL MODEL (PARALLEL)
+# DUAL BACKEND
 # =========================
-async def process_dual(**kwargs) -> List[BenchRow]:
+async def process_one_dual(**kwargs):
     return await asyncio.gather(
         process_one(backend="nemotron", **kwargs),
         process_one(backend="whisper", **kwargs),
@@ -571,44 +605,42 @@ async def main():
     p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
     p.add_argument("--data-wav-root", required=True)
     p.add_argument("--raw-librispeech-root", required=True)
+    p.add_argument("--truncate-sec", default="6,7,8,9,10")
+    p.add_argument("--inject-pause", default="")
     p.add_argument("--max-files", type=int, default=20)
-    p.add_argument("--workers", type=int, default=1)
     args = p.parse_args()
 
     wav_root = Path(args.data_wav_root)
     raw_root = Path(args.raw_librispeech_root)
+    trunc_list = [int(x) for x in args.truncate_sec.split(",")]
+    pause_plan = parse_pause_spec(args.inject_pause)
 
     wavs = sorted(wav_root.rglob("*.wav"))[: args.max_files]
+    results: List[BenchResult] = []
 
-    sem = asyncio.Semaphore(args.workers)
-    results: List[BenchRow] = []
-
-    async def run_one(wav):
-        async with sem:
-            rows = await process_dual(
+    for trunc in trunc_list:
+        print(f"\n=== Truncation {trunc}s ===")
+        for wav in wavs:
+            res = await process_one_dual(
                 wav_path=wav,
+                truncate_sec=trunc,
                 url=args.url,
                 wav_root=wav_root,
                 raw_root=raw_root,
+                pause_plan=pause_plan,
             )
-            return rows
+            results.extend(res)
+            for r in res:
+                print(f"{r.backend:9s} {r.file} latency={r.latency_ms}ms wer={r.wer}")
 
-    tasks = [asyncio.create_task(run_one(w)) for w in wavs]
-    for fut in asyncio.as_completed(tasks):
-        rows = await fut
-        results.extend(rows)
-        for r in rows:
-            print(f"{r.backend:9s} {r.wav_file} latency={r.latency_ms}ms WER={r.wer}")
-
-    out_csv = f"realtime_benchmark_{uuid.uuid4().hex[:8]}.csv"
-
+    out_csv = f"bench_dual_fast_{uuid.uuid4().hex[:8]}.csv"
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(BenchRow.__dataclass_fields__.keys())
+        w.writerow(BenchResult.__dataclass_fields__.keys())
         for r in results:
             w.writerow(r.__dict__.values())
 
-    print(f"\n✅ Saved results → {out_csv}")
+    print(f"\nSaved → {out_csv}")
 
 if __name__ == "__main__":
     asyncio.run(main())

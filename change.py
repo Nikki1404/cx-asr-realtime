@@ -2,12 +2,12 @@
 Client-side realtime ASR benchmarking (DUAL backend)
 
 Features:
-- Parallel Nemotron + Whisper per WAV
-- Fixed truncations: 6,7,8,9,10 seconds
+- Parallel Nemotron + Whisper
+- Incremental truncation via CLI (e.g. 6,7,8,9,10 sec)
+- True realtime-style streaming (chunked + paced)
 - Optional pause injection
 - LibriSpeech-compatible WER
-- Realtime or FAST mode
-- CSV output
+- UUID-based CSV per run
 
 LibriSpeech layout:
 datasets/data/wav/{dev-clean,dev-other,test-clean,test-other}/<spk>/<chap>/<utt>.wav
@@ -19,6 +19,7 @@ import asyncio
 import csv
 import json
 import time
+import uuid
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,8 +36,6 @@ TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 SLEEP_SEC = CHUNK_MS / 1000.0
-
-TRUNCATION_LIST = [6, 7, 8, 9, 10]
 
 # =========================
 # TEXT NORMALIZATION
@@ -57,7 +56,7 @@ class BenchResult:
     subset: str
     file: str
     backend: str
-    trunc_sec: int
+    trunc_sec: float
 
     audio_sec_sent: float
     ref_text: str
@@ -124,6 +123,11 @@ def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
         out.append((float(at), float(dur)))
     return sorted(out)
 
+def parse_trunc_list(spec: str) -> List[float]:
+    if not spec:
+        return []
+    return [float(x.strip()) for x in spec.split(",") if x.strip()]
+
 # =========================
 # WS TRANSCRIPTION
 # =========================
@@ -132,7 +136,7 @@ async def transcribe_ws(
     url: str,
     backend: str,
     wav_path: Path,
-    truncate_sec: int,
+    truncate_sec: Optional[float],
     pause_plan: List[Tuple[float, float]],
     realtime: bool,
 ) -> Dict:
@@ -141,7 +145,7 @@ async def transcribe_ws(
     async with websockets.connect(url, max_size=None) as ws:
         connect_ms = int((time.time() - t_conn0) * 1000)
 
-        # send config (matches your client)
+        # send config (matches your realtime client)
         await ws.send(json.dumps({
             "type": "config",
             "backend": backend,
@@ -174,7 +178,7 @@ async def transcribe_ws(
         recv_task = asyncio.create_task(receiver())
 
         sr, ch, sw = read_wav_info(wav_path)
-        assert sr == 16000 and ch == 1 and sw == 2
+        assert sr == TARGET_SR and ch == 1 and sw == 2
 
         frames_sent = 0
         audio_sec_sent = 0.0
@@ -182,7 +186,7 @@ async def transcribe_ws(
         t_stream = time.time()
 
         for chunk in iter_wav_chunks(wav_path):
-            if audio_sec_sent >= truncate_sec:
+            if truncate_sec is not None and audio_sec_sent >= truncate_sec:
                 break
 
             while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
@@ -201,9 +205,10 @@ async def transcribe_ws(
             if realtime:
                 await asyncio.sleep(SLEEP_SEC)
 
-        await ws.send(silence_bytes(0.8))
+        # flush + EOS
+        await ws.send(silence_bytes(0.6))
         if realtime:
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.6)
         await ws.send(b"")
 
         t_wait = time.time()
@@ -226,33 +231,19 @@ async def transcribe_ws(
         }
 
 # =========================
-# SINGLE BACKEND
+# SINGLE + DUAL
 # =========================
-async def process_one(
-    *,
-    wav_path: Path,
-    backend: str,
-    truncate_sec: int,
-    url: str,
-    wav_root: Path,
-    raw_root: Path,
-    pause_plan: List[Tuple[float, float]],
-    realtime: bool,
-) -> BenchResult:
+async def process_one(**kwargs) -> BenchResult:
+    wav_path = kwargs["wav_path"]
+    wav_root = kwargs["wav_root"]
+    raw_root = kwargs["raw_root"]
+    backend = kwargs["backend"]
 
     subset = wav_path.relative_to(wav_root).parts[0]
     ref = get_reference_text(wav_path, wav_root, raw_root)
 
     try:
-        out = await transcribe_ws(
-            url=url,
-            backend=backend,
-            wav_path=wav_path,
-            truncate_sec=truncate_sec,
-            pause_plan=pause_plan,
-            realtime=realtime,
-        )
-
+        out = await transcribe_ws(**kwargs)
         hyp = out["final_text"]
         wer = jiwer.wer(ref, hyp, transform, transform) if ref and hyp else None
         s = out["server"] or {}
@@ -261,7 +252,7 @@ async def process_one(
             subset=subset,
             file=wav_path.name,
             backend=backend,
-            trunc_sec=truncate_sec,
+            trunc_sec=kwargs["truncate_sec"] or -1,
             audio_sec_sent=round(out["audio_sec"], 3),
             ref_text=ref,
             hyp_text=hyp,
@@ -275,13 +266,12 @@ async def process_one(
             server_audio_ms=s.get("audio_ms"),
             server_rtf=s.get("rtf"),
         )
-
     except Exception as e:
         return BenchResult(
             subset=subset,
             file=wav_path.name,
             backend=backend,
-            trunc_sec=truncate_sec,
+            trunc_sec=kwargs["truncate_sec"] or -1,
             audio_sec_sent=0.0,
             ref_text=ref,
             hyp_text="",
@@ -297,40 +287,39 @@ async def process_one(
             error=str(e),
         )
 
-# =========================
-# DUAL BACKEND
-# =========================
 async def process_one_dual(**kwargs):
-    n, w = await asyncio.gather(
+    return await asyncio.gather(
         process_one(backend="nemotron", **kwargs),
         process_one(backend="whisper", **kwargs),
     )
-    return [n, w]
 
 # =========================
 # MAIN
 # =========================
 async def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
+    p.add_argument("--url", required=True)
     p.add_argument("--data-wav-root", required=True)
     p.add_argument("--raw-librispeech-root", required=True)
+    p.add_argument("--truncate-sec", default="")
+    p.add_argument("--inject-pause", default="")
     p.add_argument("--max-files", type=int, default=30)
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--fast", action="store_true")
-    p.add_argument("--inject-pause", default="")
-    p.add_argument("--out", default="bench_dual_trunc_pause.csv")
+    p.add_argument("--out", default="bench_dual_incremental.csv")
     args = p.parse_args()
+
+    trunc_list = parse_trunc_list(args.truncate_sec)
+    pause_plan = parse_pause_spec(args.inject_pause)
 
     wav_root = Path(args.data_wav_root)
     raw_root = Path(args.raw_librispeech_root)
     wavs = sorted(wav_root.rglob("*.wav"))[: args.max_files]
 
-    pause_plan = parse_pause_spec(args.inject_pause)
     sem = asyncio.Semaphore(args.workers)
     results: List[BenchResult] = []
 
-    async def run(wav, trunc):
+    async def run_one(wav, trunc):
         async with sem:
             return await process_one_dual(
                 wav_path=wav,
@@ -342,26 +331,33 @@ async def main():
                 realtime=not args.fast,
             )
 
-    for trunc in TRUNCATION_LIST:
-        print(f"\n=== Truncation {trunc}s | pause={pause_plan} ===")
-        tasks = [asyncio.create_task(run(w, trunc)) for w in wavs]
+    for trunc in trunc_list or [None]:
+        print(f"\n=== Incremental truncation {trunc}s ===")
+        tasks = [asyncio.create_task(run_one(w, trunc)) for w in wavs]
         for fut in asyncio.as_completed(tasks):
             res = await fut
             results.extend(res)
             for r in res:
                 print(f"{r.backend:9s} {r.file} "
+                      f"trunc={trunc} "
                       f"ttf={r.client_ttf_ms}ms wer={r.wer}")
 
-    with open(args.out, "w", newline="", encoding="utf-8") as f:
+    run_id = uuid.uuid4().hex
+    out_file = Path(args.out).with_name(
+        f"{Path(args.out).stem}_{run_id}.csv"
+    )
+
+    with open(out_file, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(BenchResult.__dataclass_fields__.keys())
         for r in results:
             w.writerow(r.__dict__.values())
 
-    print(f"\nSaved → {args.out}")
+    print(f"\n✅ Saved → {out_file}")
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 python benchmarking.py --url ws://127.0.0.1:8002/ws/asr --data-wav-root "C:\path\to\datasets\data\wav" --raw-librispeech-root "C:\path\to\datasets\data\raw\LibriSpeech" --max-files 30

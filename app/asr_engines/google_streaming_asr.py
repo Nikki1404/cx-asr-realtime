@@ -136,9 +136,6 @@ class GoogleStreamingSession:
 
         return " ".join([t for t in self._final_accum if t.strip()]).strip()
 
-    # -------------------------
-    # internal
-    # -------------------------
     def _request_gen(self):
         config = cloud_speech.RecognitionConfig(
             auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),

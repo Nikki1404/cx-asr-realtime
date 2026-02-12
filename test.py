@@ -65,10 +65,7 @@ class GoogleStreamingASR(ASREngine):
     def new_session(self, max_buffer_ms: int):
         return GoogleStreamingSession(self)
 
-
-# =========================================================
 # SESSION
-# =========================================================
 
 class GoogleStreamingSession:
     def __init__(self, engine: GoogleStreamingASR):
@@ -95,8 +92,6 @@ class GoogleStreamingSession:
         )
         self._thread.start()
 
-    # -----------------------------------------------------
-
     def accept_pcm16(self, pcm16: bytes) -> None:
         if not self._closed:
             self._audio_q.put(pcm16)
@@ -117,11 +112,7 @@ class GoogleStreamingSession:
         self.utt_flush += (time.perf_counter() - t0)
 
         return " ".join(self._final_accum).strip()
-
-    # -----------------------------------------------------
     # STREAMING
-    # -----------------------------------------------------
-
     def _request_gen(self):
         """
         SDK-safe streaming config.
@@ -154,8 +145,6 @@ class GoogleStreamingSession:
             yield cloud_speech.StreamingRecognizeRequest(
                 audio=chunk
             )
-
-    # -----------------------------------------------------
 
     def _run_streaming(self):
         try:

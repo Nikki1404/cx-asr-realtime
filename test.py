@@ -1,181 +1,140 @@
-import asyncio
-import websockets
-import json
-import pyaudio
-import numpy as np
+# ASR Realtime Benchmarking (Dual Backend)
 
-# =========================
-# CONFIG
-# =========================
-WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/asr/realtime-custom-vad"
-# WEBSOCKET_ADDRESS = "wss://cx-asr.exlservice.com/asr/realtime"
+## Overview
 
-TARGET_SR = 16000
-CHANNELS = 1
+This benchmarking setup evaluates **Nemotron (streaming)** and **Whisper (batch)** ASR models in a **true realtime simulation environment** using LibriSpeech WAV files.
 
-CHUNK_MS = 80
-CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
-SLEEP_SEC = CHUNK_MS / 1000.0
+The script:
+- Streams WAV audio incrementally (chunk-based)
+- Runs **Nemotron + Whisper in parallel**
+- Computes:
+  - Latency (client-side final transcription time)
+  - WER (Word Error Rate)
+- Supports pause injection
+- Saves CSV with unique UUID filename per run
 
-# =========================
-# 🔥 WHISPER FAST FLUSH CONFIG (ADDED)
-# =========================
-WHISPER_FLUSH_INTERVAL_SEC = 1.2   # how often to force flush
-WHISPER_FLUSH_SILENCE_MS = 160     # silence duration
+---
 
-# =========================
-# GLOBAL STATE
-# =========================
-websocket = None
-stream = None
-is_recording = False
+## Data Used for Benchmarking
 
-# =========================
-# RECEIVE LOOP
-# =========================
-async def receive_data():
-    try:
-        async for msg in websocket:
-            if isinstance(msg, str):
-                obj = json.loads(msg)
-                typ = obj.get("type")
+We use **LibriSpeech dataset structure**:
 
-                if typ == "partial":
-                    txt = obj.get("text", "")
-                    print(f"\r[PARTIAL] {txt[:120]} ", end="", flush=True)
+### WAV files
+datasets/data/wav/
+├── dev-clean/
+├── dev-other/
+├── test-clean/
+└── test-other/
+    └── <speaker>/<chapter>/<utterance>.wav
 
-                elif typ == "final":
-                    print(f"\n[FINAL] {obj.get('text')}")
-                    print(
-                        "[SERVER]",
-                        f"reason={obj.get('reason')}",
-                        f"ttf_ms={obj.get('ttf_ms')}",
-                        f"audio_ms={obj.get('audio_ms')}",
-                        f"rtf={obj.get('rtf')}",
-                        f"chunks={obj.get('chunks')}",
-                    )
-                else:
-                    print("[SERVER EVENT]", obj)
+### Reference transcripts
+datasets/data/raw/LibriSpeech/
+├── dev-clean/
+├── dev-other/
+├── test-clean/
+└── test-other/
+    └── <speaker>/<chapter>/<speaker>-<chapter>.trans.txt
 
-    except websockets.exceptions.ConnectionClosed:
-        print("\n🔌 WebSocket closed")
+The script:
+- Matches WAV file to transcript automatically
+- Computes WER using normalized comparison
 
-# =========================
-# CONNECT
-# =========================
-async def connect_websocket():
-    global websocket
-    websocket = await websockets.connect(
-        WEBSOCKET_ADDRESS,
-        max_size=None,
-    )
-    print(f"🔗 Connected to {WEBSOCKET_ADDRESS}")
+---
 
-# =========================
-# SEND CONFIG (ONLY REQUIRED)
-# =========================
-async def send_audio_config(backend: str):
-    """
-    backend: "nemotron" | "whisper"
-    """
-    audio_config = {
-        "type": "config",
-        "backend": backend,
-        "sampling_rate": TARGET_SR,
-        "chunk_ms": CHUNK_MS,
-    }
+## Realtime Simulation Logic
 
-    await websocket.send(json.dumps(audio_config))
-    print(f"📤 Sent config: {audio_config}")
+- WAV files are streamed in 80ms chunks
+- Optional silence injection simulates speech pauses
+- Nemotron + Whisper run simultaneously per file
+- No microphone required
 
-# =========================
-# MIC START
-# =========================
-async def start_recording():
-    global stream, is_recording
+---
 
-    p = pyaudio.PyAudio()
-    stream = p.open(
-        format=pyaudio.paInt16,
-        channels=CHANNELS,
-        rate=TARGET_SR,
-        input=True,
-        frames_per_buffer=CHUNK_FRAMES,
-    )
+## Installation (Client Only)
 
-    is_recording = True
-    print("🎤 Recording started (Ctrl+C to stop)")
+pip install websockets jiwer numpy
 
-# =========================
-# MIC STOP + EOS
-# =========================
-async def stop_recording():
-    global stream, is_recording
-    is_recording = False
+---
 
-    try:
-        # trailing silence + EOS
-        await websocket.send(b"\x00\x00" * int(TARGET_SR * 0.8))
-        await asyncio.sleep(0.8)
-        await websocket.send(b"")
-    except Exception:
-        pass
+## Start ASR Server
 
-    if stream:
-        stream.stop_stream()
-        stream.close()
+Example:
 
-    print("🛑 Recording stopped")
+python scripts/run_server.py --host 0.0.0.0 --port 8002
 
-# =========================
-# MAIN
-# =========================
-async def main():
-    await connect_websocket()
+WebSocket endpoint:
+ws://127.0.0.1:8002/ws/asr
 
-    # 🔁 CHANGE THIS TO TEST
-    backend = "whisper"
-    # backend = "nemotron"
+---
 
-    await send_audio_config(backend)
-    await start_recording()
+## CLI Usage
 
-    recv_task = asyncio.create_task(receive_data())
+### Basic Benchmark (Windows)
 
-    # 🔥 ADDED STATE (SAFE)
-    last_flush_time = asyncio.get_event_loop().time()
+python asr_realtime_benchmark_dual.py ^
+  --url ws://127.0.0.1:8002/ws/asr ^
+  --data-wav-root "C:\\path\\to\\datasets\\data\\wav" ^
+  --raw-librispeech-root "C:\\path\\to\\datasets\\data\\raw\\LibriSpeech" ^
+  --max-files 20
 
-    try:
-        while True:
-            data = stream.read(CHUNK_FRAMES, exception_on_overflow=False)
-            pcm = np.frombuffer(data, dtype=np.int16)
-            await websocket.send(pcm.tobytes())
+### Basic Benchmark (Linux/Mac)
 
-            # =========================
-            # 🔥 WHISPER FAST FLUSH ONLY
-            # =========================
-            if backend == "whisper":
-                now = asyncio.get_event_loop().time()
-                if now - last_flush_time >= WHISPER_FLUSH_INTERVAL_SEC:
-                    silence_frames = int(
-                        TARGET_SR * (WHISPER_FLUSH_SILENCE_MS / 1000.0)
-                    )
-                    silence = b"\x00\x00" * silence_frames
-                    await websocket.send(silence)
-                    last_flush_time = now
+python asr_realtime_benchmark_dual.py \\
+  --url ws://127.0.0.1:8002/ws/asr \\
+  --data-wav-root /path/to/datasets/data/wav \\
+  --raw-librispeech-root /path/to/datasets/data/raw/LibriSpeech \\
+  --max-files 20
 
-            await asyncio.sleep(SLEEP_SEC)
+---
 
-    except KeyboardInterrupt:
-        print("\n🧠 Keyboard interrupt")
+### Inject Pauses
 
-    finally:
-        await stop_recording()
-        recv_task.cancel()
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+python asr_realtime_benchmark_dual.py \\
+  --url ws://127.0.0.1:8002/ws/asr \\
+  --data-wav-root /path/to/datasets/data/wav \\
+  --raw-librispeech-root /path/to/datasets/data/raw/LibriSpeech \\
+  --inject-pause "2.0:0.5,5.0:1.0" \\
+  --max-files 20
 
-if __name__ == "__main__":
-    asyncio.run(main())
+---
+
+### Fast Mode (No pacing)
+
+python asr_realtime_benchmark_dual.py \\
+  --url ws://127.0.0.1:8002/ws/asr \\
+  --data-wav-root /path/to/datasets/data/wav \\
+  --raw-librispeech-root /path/to/datasets/data/raw/LibriSpeech \\
+  --fast \\
+  --max-files 20
+
+---
+
+### Concurrency Testing
+
+python asr_realtime_benchmark_dual.py \\
+  --workers 4 \\
+  --max-files 30
+
+---
+
+## CSV Output
+
+Each run generates:
+
+bench_realtime_dual_<uuid>.csv
+
+Columns:
+- subset
+- file
+- backend
+- latency_ms
+- audio_sec_sent
+- ref_text
+- hyp_text
+- wer
+- error
+
+---
+
+Generated on: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+"""

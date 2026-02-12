@@ -9,3 +9,5 @@ Traceback (most recent call last):
   File "/usr/local/lib/python3.10/dist-packages/proto/message.py", line 673, in __init__
     raise ValueError(
 ValueError: Unknown field for StreamingRecognitionConfig: interim_results
+INFO:asr_server:WS disconnected
+INFO:     connection closed

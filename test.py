@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 
 import jiwer
-import numpy as np
 import websockets
 
 # =========================
@@ -49,6 +48,7 @@ class BenchResult:
 
     error: Optional[str] = None
 
+
 # =========================
 # REFERENCE LOOKUP
 # =========================
@@ -67,6 +67,7 @@ def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
                 return line.strip().split(" ", 1)[1]
     return ""
 
+
 # =========================
 # WAV HELPERS
 # =========================
@@ -78,23 +79,28 @@ def iter_wav_chunks(path: Path):
                 break
             yield data
 
+
 def silence_bytes(sec: float) -> bytes:
     return b"\x00\x00" * int(TARGET_SR * sec)
+
 
 # =========================
 # PAUSE PARSER
 # =========================
 def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
     """
+    Example:
     "2.0:0.5,5.0:1.0"
     """
     if not spec:
         return []
+
     out = []
     for p in spec.split(","):
         at, dur = p.split(":")
         out.append((float(at), float(dur)))
     return sorted(out)
+
 
 # =========================
 # STREAM + TRANSCRIBE
@@ -138,6 +144,8 @@ async def transcribe_ws(
         t_start = time.time()
 
         for chunk in iter_wav_chunks(wav_path):
+
+            # Inject pauses
             while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
                 dur = pause_plan[pause_idx][1]
                 await ws.send(silence_bytes(dur))
@@ -146,10 +154,11 @@ async def transcribe_ws(
                 pause_idx += 1
 
             await ws.send(chunk)
+
             frames_sent += len(chunk) // 2
             audio_sec_sent = frames_sent / TARGET_SR
 
-        # finalize
+        # Final flush
         await ws.send(silence_bytes(0.6))
         await ws.send(b"")
 
@@ -161,6 +170,7 @@ async def transcribe_ws(
         recv_task.cancel()
 
         return " ".join(finals), audio_sec_sent, latency_ms
+
 
 # =========================
 # SINGLE BACKEND
@@ -215,14 +225,17 @@ async def process_one(
             error=str(e),
         )
 
+
 # =========================
-# DUAL BACKEND
+# TRIPLE BACKEND PARALLEL
 # =========================
-async def process_one_dual(**kwargs):
+async def process_one_triple(**kwargs):
     return await asyncio.gather(
         process_one(backend="nemotron", **kwargs),
         process_one(backend="whisper", **kwargs),
+        process_one(backend="google", **kwargs),
     )
+
 
 # =========================
 # MAIN
@@ -244,19 +257,24 @@ async def main():
     results: List[BenchResult] = []
 
     for wav in wavs:
-        dual = await process_one_dual(
+        triple = await process_one_triple(
             wav_path=wav,
             url=args.url,
             wav_root=wav_root,
             raw_root=raw_root,
             pause_plan=pause_plan,
         )
-        results.extend(dual)
 
-        for r in dual:
-            print(f"{r.backend:9s} {r.file} latency={r.latency_ms}ms wer={r.wer}")
+        results.extend(triple)
 
-    out_csv = f"bench_realtime_dual_{uuid.uuid4().hex[:8]}.csv"
+        for r in triple:
+            print(
+                f"{r.backend:9s} {r.file} "
+                f"latency={r.latency_ms}ms wer={r.wer}"
+            )
+
+    out_csv = f"bench_realtime_triple_{uuid.uuid4().hex[:8]}.csv"
+
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(BenchResult.__dataclass_fields__.keys())
@@ -264,6 +282,7 @@ async def main():
             w.writerow(r.__dict__.values())
 
     print(f"\nSaved → {out_csv}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

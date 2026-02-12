@@ -253,3 +253,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
+python asr_realtime_benchmarking.py --url ws://127.0.0.1:8000/asr/realtime-custom-vad --data-wav-root "C:\datasets\data\wav"  --raw-librispeech-root "C:\datasets\data\raw\LibriSpeech" --max-files 30

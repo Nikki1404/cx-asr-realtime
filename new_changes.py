@@ -1,8 +1,5 @@
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
-# ============================
-# OPTIONAL BUILD PROXY SUPPORT
-# ============================
 ARG USE_PROXY=false
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -20,9 +17,6 @@ RUN if [ "$USE_PROXY" = "true" ]; then \
         echo "🌐 Proxy disabled"; \
     fi
 
-# ============================
-# RUNTIME ENVIRONMENT
-# ============================
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -34,9 +28,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /srv
 
-# ============================
-# SYSTEM DEPENDENCIES
-# ============================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3-pip \
@@ -49,58 +40,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# ============================
-# PYTHON TOOLING
-# ============================
+
 RUN python3 -m pip install -U pip setuptools wheel
 
-# ============================
-# PYTHON DEPENDENCIES
-# (Google deps MUST be inside requirements.txt)
-# ============================
 COPY requirements.txt /srv/requirements.txt
 RUN python3.10 -m pip install --no-cache-dir -r /srv/requirements.txt
 
-# ============================
-# NEMO INSTALL
-# ============================
 RUN python3 -m pip install --no-cache-dir \
     "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main"
 
-# ============================
-# TORCH INSTALLED LAST
-# (Locks correct CUDA ABI)
-# ============================
+
 RUN python3 -m pip install --no-cache-dir --force-reinstall \
     --index-url https://download.pytorch.org/whl/cu124 \
     torch==2.5.1 \
     torchaudio==2.5.1
 
-# ============================
-# COPY APPLICATION
-# ============================
 COPY app /srv/app
 COPY scripts /srv/scripts
 
-# ============================
-# GOOGLE CREDENTIALS
-# (Embedded inside container)
-# ============================
 COPY app/google_credentials.json /srv/google_credentials.json
 
 ENV GOOGLE_APPLICATION_CREDENTIALS=/srv/google_credentials.json
 
-# Optional default recognizer
 ENV GOOGLE_RECOGNIZER=projects/eci-ugi-digital-ccaipoc/locations/us-central1/recognizers/default
 ENV GOOGLE_REGION=us-central1
 
-# ============================
-# EXPOSE PORT
-# ============================
 EXPOSE 8002
 
-# ============================
-# START SERVER
-# (Engines preload automatically in startup_event)
-# ============================
 CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]

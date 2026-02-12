@@ -1,8 +1,2 @@
-gcloud alpha ml speech recognizers create google-stt-default \
-  --project=eci-ugi-digital-ccaipoc \
-  --location=us-central1 \
-  --language-codes=en-US \
-  --model=latest_short \
-  --enable-automatic-punctuation \
-  --enable-word-confidence \
-  --enable-word-time-offsets
+(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/bu-digital-cx-asr-realtime# gcloud alpha ml speech recognizers create google-stt-default   --project=eci-ugi-digital-ccaipoc   --location=us-central1   --language-codes=en-US   --model=latest_short   --enable-automatic-punctuation   --enable-word-confidence   --enable-word-time-offsets
+ERROR: (gcloud.alpha.ml.speech.recognizers.create) ALREADY_EXISTS: Recognizer google-stt-default from project 543091104373 already exists.

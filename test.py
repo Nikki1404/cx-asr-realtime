@@ -171,3 +171,27 @@ class GoogleStreamingSession:
             print("Google streaming error:", e)
             self._latest_partial = ""
             return
+
+
+[SERVER] reason=silence ttf_ms=5532 audio_ms=5040 rtf=1.4728015609199203 chunks=253
+
+[FINAL] This is Google testing and I want to test that if it is working fine or not.
+[SERVER] reason=silence ttf_ms=2192 audio_ms=2100 rtf=3.5347280843139046 chunks=253
+
+[FINAL] This is Google testing and I want to test that if it is working fine or not.
+[SERVER] reason=silence ttf_ms=5306 audio_ms=4960 rtf=1.4965599953645705 chunks=253
+
+[FINAL] This is Google testing and I want to test that if it is working fine or not.
+[SERVER] reason=silence ttf_ms=2837 audio_ms=2740 rtf=2.70910555731342 chunks=253
+
+[FINAL] This is Google testing and I want to test that if it is working fine or not.
+[SERVER] reason=silence ttf_ms=5498 audio_ms=5220 rtf=1.4220227963639909 chunks=253
+
+[FINAL] This is Google testing and I want to test that if it is working fine or not.
+[SERVER] reason=silence ttf_ms=1771 audio_ms=1680 rtf=4.418433462498277 chunks=253
+
+[FINAL] This is Google testing and I want to test that if it is working fine or not.
+[SERVER] reason=silence ttf_ms=2725 audio_ms=2580 rtf=2.8771230182294594 chunks=253
+
+[FINAL] This is Google testing and I want to test that if it is working fine or not.
+[SERVER] reason=silence ttf_ms=2800 audio_ms=2660 rtf=2.790597356029583 chunks=253

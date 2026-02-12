@@ -8,13 +8,13 @@ ENV http_proxy=""
 ENV https_proxy=""
 
 RUN if [ "$USE_PROXY" = "true" ]; then \
-        echo "🔐 Enabling proxy"; \
+        echo " Enabling proxy"; \
         export http_proxy=${HTTP_PROXY}; \
         export https_proxy=${HTTPS_PROXY}; \
         echo "http_proxy=${HTTP_PROXY}" >> /etc/environment; \
         echo "https_proxy=${HTTPS_PROXY}" >> /etc/environment; \
     else \
-        echo "🌐 Proxy disabled"; \
+        echo " Proxy disabled"; \
     fi
 
 ENV DEBIAN_FRONTEND=noninteractive \

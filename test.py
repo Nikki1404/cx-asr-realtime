@@ -12,16 +12,10 @@ from typing import Optional, List, Tuple
 import jiwer
 import websockets
 
-# =========================
-# AUDIO CONFIG
-# =========================
 TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 
-# =========================
-# TEXT NORMALIZATION
-# =========================
 transform = jiwer.Compose([
     jiwer.ToLowerCase(),
     jiwer.RemovePunctuation(),
@@ -30,9 +24,6 @@ transform = jiwer.Compose([
     jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
 ])
 
-# =========================
-# RESULT SCHEMA
-# =========================
 @dataclass
 class BenchResult:
     subset: str
@@ -48,10 +39,6 @@ class BenchResult:
 
     error: Optional[str] = None
 
-
-# =========================
-# REFERENCE LOOKUP
-# =========================
 def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
     utt_id = wav_path.stem
     rel = wav_path.relative_to(wav_root)
@@ -68,9 +55,6 @@ def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
     return ""
 
 
-# =========================
-# WAV HELPERS
-# =========================
 def iter_wav_chunks(path: Path):
     with wave.open(str(path), "rb") as wf:
         while True:
@@ -84,9 +68,6 @@ def silence_bytes(sec: float) -> bytes:
     return b"\x00\x00" * int(TARGET_SR * sec)
 
 
-# =========================
-# PAUSE PARSER
-# =========================
 def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
     """
     Example:
@@ -101,10 +82,6 @@ def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
         out.append((float(at), float(dur)))
     return sorted(out)
 
-
-# =========================
-# STREAM + TRANSCRIBE
-# =========================
 async def transcribe_ws(
     *,
     url: str,
@@ -172,9 +149,6 @@ async def transcribe_ws(
         return " ".join(finals), audio_sec_sent, latency_ms
 
 
-# =========================
-# SINGLE BACKEND
-# =========================
 async def process_one(
     *,
     wav_path: Path,
@@ -226,9 +200,6 @@ async def process_one(
         )
 
 
-# =========================
-# TRIPLE BACKEND PARALLEL
-# =========================
 async def process_one_triple(**kwargs):
     return await asyncio.gather(
         process_one(backend="nemotron", **kwargs),
@@ -236,10 +207,6 @@ async def process_one_triple(**kwargs):
         process_one(backend="google", **kwargs),
     )
 
-
-# =========================
-# MAIN
-# =========================
 async def main():
     p = argparse.ArgumentParser()
     p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")

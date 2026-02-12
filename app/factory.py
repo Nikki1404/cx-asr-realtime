@@ -6,9 +6,6 @@ from app.asr_engines.google_streaming_asr import GoogleStreamingASR
 
 def build_engine(cfg: Config):
 
-    # -------------------------
-    # NEMOTRON
-    # -------------------------
     if cfg.asr_backend == "nemotron":
         return NemotronStreamingASR(
             model_name=cfg.model_name,
@@ -17,19 +14,12 @@ def build_engine(cfg: Config):
             context_right=cfg.context_right,
         )
 
-    # -------------------------
-    # WHISPER
-    # -------------------------
     if cfg.asr_backend == "whisper":
         return WhisperTurboASR(
             model_name=cfg.model_name,
             device=cfg.device,
             sample_rate=cfg.sample_rate,
         )
-
-    # -------------------------
-    # GOOGLE STREAMING
-    # -------------------------
     if cfg.asr_backend == "google":
         if not cfg.google_recognizer:
             raise ValueError("GOOGLE_RECOGNIZER is required for google backend")
@@ -43,8 +33,4 @@ def build_engine(cfg: Config):
             interim_results=cfg.google_interim,
             explicit_decoding=cfg.google_explicit_decoding,
         )
-
-    # -------------------------
-    # Unsupported
-    # -------------------------
     raise ValueError(f"Unsupported ASR_BACKEND={cfg.asr_backend}")

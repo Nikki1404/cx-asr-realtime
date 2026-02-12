@@ -2,6 +2,8 @@ accelerate
 fastapi
 google-cloud-speech>=2.25.0
 google-auth>=2.28.0
+google-api-core>=2.19.0
+grpcio>=1.62.0
 hydra-core
 huggingface_hub
 numpy<2.0

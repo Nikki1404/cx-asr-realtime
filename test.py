@@ -1,231 +1,269 @@
-import os
+import argparse
+import asyncio
+import csv
+import json
 import time
-import queue
-import threading
-from typing import Optional
+import uuid
+import wave
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, List, Tuple
 
-from google.api_core.client_options import ClientOptions
-from google.cloud import speech_v2
-from google.cloud.speech_v2.types import cloud_speech
+import jiwer
+import numpy as np
+import websockets
 
-from app.asr_engines.base import ASREngine, EngineCaps
+# =========================
+# AUDIO CONFIG
+# =========================
+TARGET_SR = 16000
+CHUNK_MS = 80
+CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 
+# =========================
+# TEXT NORMALIZATION
+# =========================
+transform = jiwer.Compose([
+    jiwer.ToLowerCase(),
+    jiwer.RemovePunctuation(),
+    jiwer.RemoveMultipleSpaces(),
+    jiwer.Strip(),
+    jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
+])
 
-class GoogleStreamingASR(ASREngine):
+# =========================
+# RESULT SCHEMA
+# =========================
+@dataclass
+class BenchResult:
+    subset: str
+    file: str
+    backend: str
+
+    latency_ms: int
+    audio_sec_sent: float
+
+    ref_text: str
+    hyp_text: str
+    wer: Optional[float]
+
+    error: Optional[str] = None
+
+# =========================
+# REFERENCE LOOKUP
+# =========================
+def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
+    utt_id = wav_path.stem
+    rel = wav_path.relative_to(wav_root)
+    subset, spk, chap = rel.parts[:3]
+
+    trans = raw_root / subset / spk / chap / f"{spk}-{chap}.trans.txt"
+    if not trans.exists():
+        return ""
+
+    with open(trans, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith(utt_id + " "):
+                return line.strip().split(" ", 1)[1]
+    return ""
+
+# =========================
+# WAV HELPERS
+# =========================
+def iter_wav_chunks(path: Path):
+    with wave.open(str(path), "rb") as wf:
+        while True:
+            data = wf.readframes(CHUNK_FRAMES)
+            if not data:
+                break
+            yield data
+
+def silence_bytes(sec: float) -> bytes:
+    return b"\x00\x00" * int(TARGET_SR * sec)
+
+# =========================
+# PAUSE PARSER
+# =========================
+def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
     """
-    Google Cloud Speech-to-Text v2 streaming engine.
-
-    True streaming:
-    - partials supported
-    - final supported
-    - TTFT meaningful (network dependent)
+    "2.0:0.5,5.0:1.0"
     """
+    if not spec:
+        return []
+    out = []
+    for p in spec.split(","):
+        at, dur = p.split(":")
+        out.append((float(at), float(dur)))
+    return sorted(out)
 
-    caps = EngineCaps(
-        streaming=True,
-        partials=True,
-        ttft_meaningful=True,
+# =========================
+# STREAM + TRANSCRIBE
+# =========================
+async def transcribe_ws(
+    *,
+    url: str,
+    backend: str,
+    wav_path: Path,
+    pause_plan: List[Tuple[float, float]],
+) -> Tuple[str, float, int]:
+
+    async with websockets.connect(url, max_size=None) as ws:
+
+        # Send config
+        await ws.send(json.dumps({
+            "type": "config",
+            "backend": backend,
+            "sampling_rate": TARGET_SR,
+            "chunk_ms": CHUNK_MS,
+        }))
+
+        finals = []
+        final_received = asyncio.Event()
+
+        async def receiver():
+            async for msg in ws:
+                if isinstance(msg, str):
+                    obj = json.loads(msg)
+                    if obj.get("type") == "final":
+                        if obj.get("text"):
+                            finals.append(obj["text"].strip())
+                        final_received.set()
+
+        recv_task = asyncio.create_task(receiver())
+
+        frames_sent = 0
+        audio_sec_sent = 0.0
+        pause_idx = 0
+
+        t_start = time.time()
+
+        for chunk in iter_wav_chunks(wav_path):
+            while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
+                dur = pause_plan[pause_idx][1]
+                await ws.send(silence_bytes(dur))
+                frames_sent += int(TARGET_SR * dur)
+                audio_sec_sent = frames_sent / TARGET_SR
+                pause_idx += 1
+
+            await ws.send(chunk)
+            frames_sent += len(chunk) // 2
+            audio_sec_sent = frames_sent / TARGET_SR
+
+        # finalize
+        await ws.send(silence_bytes(0.6))
+        await ws.send(b"")
+
+        await asyncio.wait_for(final_received.wait(), timeout=30)
+
+        latency_ms = int((time.time() - t_start) * 1000)
+
+        await ws.close()
+        recv_task.cancel()
+
+        return " ".join(finals), audio_sec_sent, latency_ms
+
+# =========================
+# SINGLE BACKEND
+# =========================
+async def process_one(
+    *,
+    wav_path: Path,
+    backend: str,
+    url: str,
+    wav_root: Path,
+    raw_root: Path,
+    pause_plan: List[Tuple[float, float]],
+) -> BenchResult:
+
+    subset = wav_path.relative_to(wav_root).parts[0]
+    ref = get_reference_text(wav_path, wav_root, raw_root)
+
+    try:
+        hyp, audio_sec, latency_ms = await transcribe_ws(
+            url=url,
+            backend=backend,
+            wav_path=wav_path,
+            pause_plan=pause_plan,
+        )
+
+        wer = None
+        if ref and hyp:
+            wer = jiwer.wer(ref, hyp, transform, transform)
+            wer = round(float(wer), 4)
+
+        return BenchResult(
+            subset=subset,
+            file=wav_path.name,
+            backend=backend,
+            latency_ms=latency_ms,
+            audio_sec_sent=round(audio_sec, 3),
+            ref_text=ref,
+            hyp_text=hyp,
+            wer=wer,
+        )
+
+    except Exception as e:
+        return BenchResult(
+            subset=subset,
+            file=wav_path.name,
+            backend=backend,
+            latency_ms=0,
+            audio_sec_sent=0.0,
+            ref_text=ref,
+            hyp_text="",
+            wer=None,
+            error=str(e),
+        )
+
+# =========================
+# DUAL BACKEND
+# =========================
+async def process_one_dual(**kwargs):
+    return await asyncio.gather(
+        process_one(backend="nemotron", **kwargs),
+        process_one(backend="whisper", **kwargs),
     )
 
-    def __init__(self, sample_rate: int):
-        self.sr = sample_rate
-        self.client: Optional[speech_v2.SpeechClient] = None
+# =========================
+# MAIN
+# =========================
+async def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
+    p.add_argument("--data-wav-root", required=True)
+    p.add_argument("--raw-librispeech-root", required=True)
+    p.add_argument("--max-files", type=int, default=20)
+    p.add_argument("--inject-pause", default="")
+    args = p.parse_args()
 
-        self.region = os.getenv("GOOGLE_REGION", "us-central1")
-        self.recognizer = os.getenv("GOOGLE_RECOGNIZER", "").strip()
-        self.language_code = os.getenv("GOOGLE_LANG", "en-US")
-        self.model = os.getenv("GOOGLE_MODEL", "latest_short")
+    wav_root = Path(args.data_wav_root)
+    raw_root = Path(args.raw_librispeech_root)
+    wavs = sorted(wav_root.rglob("*.wav"))[: args.max_files]
 
-    @property
-    def model_name(self) -> str:
-        return f"google:{self.model}"
+    pause_plan = parse_pause_spec(args.inject_pause)
+    results: List[BenchResult] = []
 
-    def load(self) -> float:
-        t0 = time.time()
-
-        if not self.recognizer:
-            raise ValueError("GOOGLE_RECOGNIZER env variable not set")
-
-        endpoint = f"{self.region}-speech.googleapis.com"
-        self.client = speech_v2.SpeechClient(
-            client_options=ClientOptions(api_endpoint=endpoint)
+    for wav in wavs:
+        dual = await process_one_dual(
+            wav_path=wav,
+            url=args.url,
+            wav_root=wav_root,
+            raw_root=raw_root,
+            pause_plan=pause_plan,
         )
+        results.extend(dual)
 
-        return time.time() - t0
+        for r in dual:
+            print(f"{r.backend:9s} {r.file} latency={r.latency_ms}ms wer={r.wer}")
 
-    def new_session(self, max_buffer_ms: int):
-        return GoogleStreamingSession(self)
+    out_csv = f"bench_realtime_dual_{uuid.uuid4().hex[:8]}.csv"
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(BenchResult.__dataclass_fields__.keys())
+        for r in results:
+            w.writerow(r.__dict__.values())
 
+    print(f"\nSaved → {out_csv}")
 
-# =============================================================
-
-
-class GoogleStreamingSession:
-    """
-    Per-websocket session.
-
-    IMPORTANT:
-    Your server calls step_if_ready() every VAD frame.
-    So we must:
-      - return partial ONLY when it changes (dedupe)
-      - reset internal accumulators after finalize() (like Nemotron/Whisper)
-    """
-
-    def __init__(self, engine: GoogleStreamingASR):
-        self.engine = engine
-        if self.engine.client is None:
-            raise RuntimeError("Google engine not loaded")
-
-        # metrics parity with Nemotron
-        self.utt_preproc = 0.0
-        self.utt_infer = 0.0
-        self.utt_flush = 0.0
-        self.chunks = 0
-
-        # state init
-        self._reset_utterance_state()
-
-    # -------------------------
-    # session lifecycle
-    # -------------------------
-
-    def _reset_utterance_state(self):
-        # audio queue + thread state
-        self._audio_q: "queue.Queue[Optional[bytes]]" = queue.Queue()
-        self._closed = False
-
-        # transcript state
-        self._latest_partial: str = ""
-        self._last_partial_sent: str = ""   # DEDUPE KEY
-        self._final_parts: list[str] = []
-
-        # chunk counter should reset per utterance (matches Nemotron behavior)
-        self.chunks = 0
-
-        # restart worker thread
-        self._thread = threading.Thread(target=self._run_stream, daemon=True)
-        self._thread.start()
-
-    # -------------------------
-    # ASRSession interface
-    # -------------------------
-
-    def accept_pcm16(self, pcm16: bytes):
-        if self._closed:
-            return
-        if not pcm16:
-            return
-        self._audio_q.put(pcm16)
-        self.chunks += 1
-
-    def step_if_ready(self) -> Optional[str]:
-        """
-        Return a partial ONLY when it's NEW (prevents infinite repeat prints).
-        """
-        if not self._latest_partial:
-            return None
-
-        if self._latest_partial == self._last_partial_sent:
-            return None
-
-        self._last_partial_sent = self._latest_partial
-        return self._latest_partial
-
-    def finalize(self, pad_ms: int) -> str:
-        """
-        Close current Google stream, wait briefly for final results, return final text,
-        then RESET for next utterance (critical fix).
-        """
-        # Optional pad to help last phonemes (similar to your other engines)
-        if pad_ms and pad_ms > 0:
-            pad_samples = int(self.engine.sr * (pad_ms / 1000.0))
-            pad_bytes = b"\x00\x00" * pad_samples
-            try:
-                self._audio_q.put(pad_bytes)
-            except Exception:
-                pass
-
-        if not self._closed:
-            self._closed = True
-            self._audio_q.put(None)
-
-        t0 = time.perf_counter()
-        self._thread.join(timeout=2.5)
-        self.utt_flush += (time.perf_counter() - t0)
-
-        final_text = " ".join(self._final_parts).strip()
-
-        # ✅ CRITICAL: reset for next utterance so we don't repeat the same final forever
-        self._reset_utterance_state()
-
-        return final_text
-
-    # -------------------------
-    # internal: google request/response
-    # -------------------------
-
-    def _request_generator(self):
-        """
-        Uses ExplicitDecodingConfig for raw PCM16 streaming.
-        """
-
-        recognition_config = cloud_speech.RecognitionConfig(
-            explicit_decoding_config=cloud_speech.ExplicitDecodingConfig(
-                encoding=cloud_speech.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=self.engine.sr,
-                audio_channel_count=1,
-            ),
-            language_codes=[self.engine.language_code],
-            model=self.engine.model,
-        )
-
-        streaming_config = cloud_speech.StreamingRecognitionConfig(
-            config=recognition_config,
-        )
-
-        # First request must contain config
-        yield cloud_speech.StreamingRecognizeRequest(
-            recognizer=self.engine.recognizer,
-            streaming_config=streaming_config,
-        )
-
-        while True:
-            chunk = self._audio_q.get()
-            if chunk is None:
-                break
-
-            yield cloud_speech.StreamingRecognizeRequest(audio=chunk)
-
-    def _run_stream(self):
-        try:
-            t_infer0 = time.perf_counter()
-
-            responses = self.engine.client.streaming_recognize(
-                requests=self._request_generator()
-            )
-
-            for response in responses:
-                self.utt_infer += (time.perf_counter() - t_infer0)
-                t_infer0 = time.perf_counter()
-
-                for result in response.results:
-                    if not result.alternatives:
-                        continue
-
-                    transcript = (result.alternatives[0].transcript or "").strip()
-                    if not transcript:
-                        continue
-
-                    if result.is_final:
-                        self._final_parts.append(transcript)
-                        # once final arrives, clear partial so dedupe resets naturally
-                        self._latest_partial = ""
-                        self._last_partial_sent = ""
-                    else:
-                        self._latest_partial = transcript
-
-        except Exception as e:
-            print("Google streaming error:", e)
-            self._latest_partial = ""
-            self._last_partial_sent = ""
-            return
+if __name__ == "__main__":
+    asyncio.run(main())

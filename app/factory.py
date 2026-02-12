@@ -21,16 +21,9 @@ def build_engine(cfg: Config):
             sample_rate=cfg.sample_rate,
         )
     if cfg.asr_backend == "google":
-        if not cfg.google_recognizer:
-            raise ValueError("GOOGLE_RECOGNIZER is required for google backend")
-
+        # Google engine reads everything from environment variables
         return GoogleStreamingASR(
-            recognizer=cfg.google_recognizer,
-            region=cfg.google_region,
             sample_rate=cfg.sample_rate,
-            language_code=cfg.google_language,
-            model=cfg.google_model,
-            interim_results=cfg.google_interim,
-            explicit_decoding=cfg.google_explicit_decoding,
         )
+
     raise ValueError(f"Unsupported ASR_BACKEND={cfg.asr_backend}")

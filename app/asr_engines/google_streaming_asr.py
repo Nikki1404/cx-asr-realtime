@@ -140,11 +140,6 @@ class GoogleStreamingSession:
     # internal
     # -------------------------
     def _request_gen(self):
-        """
-        Generator that yields:
-          1) initial request containing streaming_config
-          2) audio chunks as they arrive
-        """
         config = cloud_speech.RecognitionConfig(
             auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
             language_codes=[self.engine.language_code],
@@ -153,20 +148,26 @@ class GoogleStreamingSession:
 
         streaming_config = cloud_speech.StreamingRecognitionConfig(
             config=config,
-            interim_results=True,  # partials
+            streaming_features=cloud_speech.StreamingRecognitionFeatures(
+                enable_partial_results=True
+            ),
         )
 
-        # Initial config request
+        # FIRST message MUST contain config
         yield cloud_speech.StreamingRecognizeRequest(
             recognizer=self.engine.recognizer,
             streaming_config=streaming_config,
         )
 
+        # Then stream audio
         while True:
             chunk = self._audio_q.get()
             if chunk is None:
                 return
-            yield cloud_speech.StreamingRecognizeRequest(audio=chunk)
+
+            yield cloud_speech.StreamingRecognizeRequest(
+                audio=chunk
+            )
 
     def _run_streaming(self):
         """

@@ -3,29 +3,39 @@ import websockets
 import json
 import pyaudio
 import numpy as np
+import sys
 
+# ============================
 # CONFIG
+# ============================
+
 WEBSOCKET_ADDRESS = "ws://127.0.0.1:8002/asr/realtime-custom-vad"
-# WEBSOCKET_ADDRESS = "wss://cx-asr.exlservice.com/asr/realtime"
 
 TARGET_SR = 16000
 CHANNELS = 1
 
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
-SLEEP_SEC = CHUNK_MS / 1000.0
+SLEEP_SEC = CHUNK_MS / 1000.0  # Real-time pacing
 
-#  WHISPER FAST FLUSH CONFIG (ADDED)
-WHISPER_FLUSH_INTERVAL_SEC = 0.35   # how often to force flush
-WHISPER_FLUSH_SILENCE_MS = 80     # silence duration
+# Whisper-specific fast flush tuning
+WHISPER_FLUSH_INTERVAL_SEC = 0.35
+WHISPER_FLUSH_SILENCE_MS = 80
 
 
+# ============================
 # GLOBAL STATE
+# ============================
+
 websocket = None
 stream = None
 is_recording = False
 
+
+# ============================
 # RECEIVE LOOP
+# ============================
+
 async def receive_data():
     try:
         async for msg in websocket:
@@ -47,6 +57,7 @@ async def receive_data():
                         f"rtf={obj.get('rtf')}",
                         f"chunks={obj.get('chunks')}",
                     )
+
                 else:
                     print("[SERVER EVENT]", obj)
 
@@ -54,7 +65,10 @@ async def receive_data():
         print("\n🔌 WebSocket closed")
 
 
+# ============================
 # CONNECT
+# ============================
+
 async def connect_websocket():
     global websocket
     websocket = await websockets.connect(
@@ -63,22 +77,27 @@ async def connect_websocket():
     )
     print(f"🔗 Connected to {WEBSOCKET_ADDRESS}")
 
-# SEND CONFIG (ONLY REQUIRED)
+
+# ============================
+# SEND BACKEND CONFIG
+# ============================
+
 async def send_audio_config(backend: str):
     """
-    backend: "nemotron" | "whisper"
+    backend: "nemotron" | "whisper" | "google"
     """
     audio_config = {
-        "type": "config",
-        "backend": backend,
-        "sampling_rate": TARGET_SR,
-        "chunk_ms": CHUNK_MS,
+        "backend": backend
     }
 
     await websocket.send(json.dumps(audio_config))
-    print(f"📤 Sent config: {audio_config}")
+    print(f"📤 Sent backend config: {backend}")
 
+
+# ============================
 # MIC START
+# ============================
+
 async def start_recording():
     global stream, is_recording
 
@@ -92,17 +111,23 @@ async def start_recording():
     )
 
     is_recording = True
-    print(" Recording started (Ctrl+C to stop)")
+    print("🎤 Recording started (Ctrl+C to stop)")
 
+
+# ============================
 # MIC STOP + EOS
+# ============================
+
 async def stop_recording():
     global stream, is_recording
     is_recording = False
 
     try:
-        # trailing silence + EOS
-        await websocket.send(b"\x00\x00" * int(TARGET_SR * 0.8))
-        await asyncio.sleep(0.8)
+        # trailing silence to ensure last word flush
+        await websocket.send(b"\x00\x00" * int(TARGET_SR * 0.6))
+        await asyncio.sleep(0.5)
+
+        # explicit EOS
         await websocket.send(b"")
     except Exception:
         pass
@@ -111,30 +136,38 @@ async def stop_recording():
         stream.stop_stream()
         stream.close()
 
-    print(" Recording stopped")
+    print("🛑 Recording stopped")
 
-# MAIN
+
+# ============================
+# MAIN LOOP
+# ============================
+
 async def main():
+    backend = "nemotron"
+    if len(sys.argv) > 1:
+        backend = sys.argv[1]
+
+    if backend not in ("nemotron", "whisper", "google"):
+        print("Usage: python client.py [nemotron|whisper|google]")
+        return
+
     await connect_websocket()
-
-    #  CHANGE THIS TO TEST
-    backend = "whisper"
-    # backend = "nemotron"
-
     await send_audio_config(backend)
     await start_recording()
 
     recv_task = asyncio.create_task(receive_data())
 
-    #  ADDED STATE (SAFE)
     last_flush_time = asyncio.get_event_loop().time()
 
     try:
         while True:
             data = stream.read(CHUNK_FRAMES, exception_on_overflow=False)
             pcm = np.frombuffer(data, dtype=np.int16)
+
             await websocket.send(pcm.tobytes())
-            # WHISPER FAST FLUSH ONLY
+
+            # Whisper-only forced flush logic
             if backend == "whisper":
                 now = asyncio.get_event_loop().time()
                 if now - last_flush_time >= WHISPER_FLUSH_INTERVAL_SEC:
@@ -145,10 +178,11 @@ async def main():
                     await websocket.send(silence)
                     last_flush_time = now
 
+            # Real-time pacing
             await asyncio.sleep(SLEEP_SEC)
 
     except KeyboardInterrupt:
-        print("\n Keyboard interrupt")
+        print("\n⌨️ Keyboard interrupt")
 
     finally:
         await stop_recording()
@@ -157,6 +191,7 @@ async def main():
             await websocket.close()
         except Exception:
             pass
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -32,8 +32,10 @@ class Config:
 # MODEL MAPPING - Backend → Model
 MODEL_MAP = {
     "whisper": "openai/whisper-large-v3-turbo",
-    "nemotron": "nvidia/nemotron-speech-streaming-en-0.6b"
+    "nemotron": "nvidia/nemotron-speech-streaming-en-0.6b",
+    "google": "google-streaming"
 }
+
 
 
 def load_config() -> Config:

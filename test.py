@@ -256,4 +256,4 @@ if __name__ == "__main__":
 
 
 
-python asr_realtime_benchmarking.py --url ws://127.0.0.1:8000/asr/realtime-custom-vad --data-wav-root "C:\datasets\data\wav"  --raw-librispeech-root "C:\datasets\data\raw\LibriSpeech" --max-files 30
+python asr_realtime_benchmarking.py --url ws://127.0.0.1:8000/asr/realtime-custom-vad --data-wav-root "C:\Users\re_nikitav\Documents\utils\utils\datasets\data\wav"  --raw-librispeech-root "C:\Users\re_nikitav\Documents\utils\utils\datasets\data\raw\LibriSpeech" --max-files 30

@@ -195,3 +195,60 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+INFO:asr_server:✅ Preloaded google (google-stt-v2-streaming) in 0.13s
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
+INFO:     172.17.0.1:35070 - "WebSocket /asr/realtime-custom-vad" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+
+PS C:\Users\re_nikitav> ssh -L 8000:localhost:8000 re_nikitav@10.90.126.61
+re_nikitav@10.90.126.61's password:
+Welcome to Ubuntu 22.04.5 LTS (GNU/Linux 6.8.0-1044-aws x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+ System information as of Thu Feb 12 14:29:58 UTC 2026
+
+  System load:  0.01                Processes:             288
+  Usage of /:   77.6% of 517.35GB   Users logged in:       4
+  Memory usage: 70%                 IPv4 address for ens5: 10.90.126.61
+  Swap usage:   0%
+
+(client_env) PS C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts> python .\ws_client.py
+Traceback (most recent call last):
+  File "C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts\ws_client.py", line 197, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts\ws_client.py", line 155, in main
+    await connect_websocket()
+  File "C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts\ws_client.py", line 74, in connect_websocket
+    websocket = await websockets.connect(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+    )
+    ^
+  File "C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts\client_env\Lib\site-packages\websockets\asyncio\client.py", line 546, in __await_impl__
+    await self.connection.handshake(
+    ...<2 lines>...
+    )
+  File "C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts\client_env\Lib\site-packages\websockets\asyncio\client.py", line 115, in handshake
+    raise self.protocol.handshake_exc
+  File "C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts\client_env\Lib\site-packages\websockets\client.py", line 327, in parse
+    self.process_response(response)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts\client_env\Lib\site-packages\websockets\client.py", line 144, in process_response
+    raise InvalidStatus(response)
+websockets.exceptions.InvalidStatus: server rejected WebSocket connection: HTTP 403

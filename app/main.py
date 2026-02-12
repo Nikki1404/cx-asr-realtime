@@ -23,7 +23,7 @@ ENGINE_CACHE: dict[str, ASREngine] = {}
 # ✅ PRELOAD BOTH MODELS AT STARTUP (takes ~30-60s once)
 async def preload_engines():
     """Preload both Whisper + Nemotron models into cache"""
-    backends = ["whisper", "nemotron"]
+    backends = ["whisper", "nemotron", "google"]
     
     print("🚀 Preloading ASR engines (this happens once at startup)...")
     for backend in backends:
@@ -77,7 +77,7 @@ async def ws_asr(ws: WebSocket):
     init_obj = json.loads(init)
 
     backend = init_obj.get("backend")
-    if backend not in ("nemotron", "whisper"):
+    if backend not in ("nemotron", "whisper", "google"):
         await ws.close(code=4000)
         return
 

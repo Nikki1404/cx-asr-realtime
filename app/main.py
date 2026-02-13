@@ -20,12 +20,12 @@ log = logging.getLogger("asr_server")
 app = FastAPI()
 ENGINE_CACHE: dict[str, ASREngine] = {}
 
-# ✅ PRELOAD BOTH MODELS AT STARTUP (takes ~30-60s once)
+#  PRELOAD BOTH MODELS AT STARTUP (takes ~30-60s once)
 async def preload_engines():
     """Preload both Whisper + Nemotron models into cache"""
     backends = ["whisper", "nemotron", "google"]
     
-    print("🚀 Preloading ASR engines (this happens once at startup)...")
+    print(" Preloading ASR engines (this happens once at startup)...")
     for backend in backends:
         try:
             model_name = MODEL_MAP[backend]
@@ -40,16 +40,16 @@ async def preload_engines():
 
             engine = build_engine(tmp_cfg)
             load_sec = engine.load()
-            log.info(f"✅ Preloaded {backend} ({model_name}) in {load_sec:.2f}s")
+            log.info(f" Preloaded {backend} ({model_name}) in {load_sec:.2f}s")
             ENGINE_CACHE[backend] = engine
             
         except Exception as e:
-            log.error(f"❌ Failed to preload {backend}: {e}")
+            log.error(f" Failed to preload {backend}: {e}")
             continue
     
-    print("🎉 All engines preloaded! Client requests will be INSTANT.")
+    print(" All engines preloaded! Client requests will be INSTANT.")
 
-# 🔥 STARTUP EVENT - Preload happens automatically
+#  STARTUP EVENT - Preload happens automatically
 @app.on_event("startup")
 async def startup_event():
     await preload_engines()
@@ -59,7 +59,7 @@ def get_engine(backend: str) -> ASREngine:
     if backend not in ENGINE_CACHE:
         raise ValueError(f"Engine '{backend}' not preloaded. Available: {list(ENGINE_CACHE.keys())}")
     
-    log.info(f"🔥 Using cached {backend} engine (0ms latency!)")
+    log.info(f" Using cached {backend} engine (0ms latency!)")
     return ENGINE_CACHE[backend]
 
 
@@ -68,11 +68,11 @@ async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.websocket("/ws/asr")
+@app.websocket("asr/realtime-custom-vad")
 async def ws_asr(ws: WebSocket):
     await ws.accept()
 
-    # 🔑 FIRST MESSAGE MUST BE CONFIG
+    #  FIRST MESSAGE MUST BE CONFIG
     init = await ws.receive_text()
     init_obj = json.loads(init)
 

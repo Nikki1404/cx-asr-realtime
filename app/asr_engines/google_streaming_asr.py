@@ -1,10 +1,8 @@
 import os
 import time
-import json
 import queue
 import threading
-from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional
 
 from google.api_core.client_options import ClientOptions
 from google.cloud import speech_v2
@@ -13,25 +11,14 @@ from google.cloud.speech_v2.types import cloud_speech
 from app.asr_engines.base import ASREngine, EngineCaps
 
 
-@dataclass
-class GoogleStreamTimings:
-    preproc_sec: float = 0.0
-    infer_sec: float = 0.0
-    flush_sec: float = 0.0
-
-
 class GoogleStreamingASR(ASREngine):
     """
     Google Cloud Speech-to-Text v2 streaming engine.
 
-    ✅ True streaming: partials + final
-    ✅ TTFT meaningful (network dependent)
-    ✅ CPU-side; inference happens in Google Cloud
-
-    ENV required:
-      - GOOGLE_APPLICATION_CREDENTIALS=/srv/google_credentials.json
-      - GOOGLE_RECOGNIZER=projects/<PROJECT_ID>/locations/<REGION>/recognizers/<RECOGNIZER_ID>
-      - GOOGLE_REGION=us-central1 (or your region)
+    True streaming:
+    - partials supported
+    - final supported
+    - TTFT meaningful (network dependent)
     """
 
     caps = EngineCaps(
@@ -46,35 +33,23 @@ class GoogleStreamingASR(ASREngine):
 
         self.region = os.getenv("GOOGLE_REGION", "us-central1")
         self.recognizer = os.getenv("GOOGLE_RECOGNIZER", "").strip()
-
-        # Tuning knobs (can be overridden via env)
-        self.model = os.getenv("GOOGLE_MODEL", "latest_short")
         self.language_code = os.getenv("GOOGLE_LANG", "en-US")
-
-        if not self.recognizer:
-            # keep load() from crashing hard; server preload will log error
-            pass
+        self.model = os.getenv("GOOGLE_MODEL", "latest_short")
 
     @property
     def model_name(self) -> str:
-        # for metrics labeling
         return f"google:{self.model}"
 
     def load(self) -> float:
         t0 = time.time()
 
-        # Endpoint form: <region>-speech.googleapis.com
+        if not self.recognizer:
+            raise ValueError("GOOGLE_RECOGNIZER env variable not set")
+
         endpoint = f"{self.region}-speech.googleapis.com"
         self.client = speech_v2.SpeechClient(
             client_options=ClientOptions(api_endpoint=endpoint)
         )
-
-        # sanity check recognizer env
-        if not self.recognizer:
-            raise ValueError(
-                "GOOGLE_RECOGNIZER env not set. Example: "
-                "projects/<PROJECT_ID>/locations/<REGION>/recognizers/<RECOGNIZER_ID>"
-            )
 
         return time.time() - t0
 
@@ -82,122 +57,175 @@ class GoogleStreamingASR(ASREngine):
         return GoogleStreamingSession(self)
 
 
+# =============================================================
+
+
 class GoogleStreamingSession:
     """
     Per-websocket session.
 
-    - accept_pcm16(): enqueue audio bytes
-    - step_if_ready(): returns latest partial (if any)
-    - finalize(): ends stream, returns accumulated final
+    IMPORTANT:
+    Your server calls step_if_ready() every VAD frame.
+    So we must:
+      - return partial ONLY when it changes (dedupe)
+      - reset internal accumulators after finalize() (like Nemotron/Whisper)
     """
 
     def __init__(self, engine: GoogleStreamingASR):
         self.engine = engine
         if self.engine.client is None:
-            raise RuntimeError("GoogleStreamingASR not loaded (client is None)")
+            raise RuntimeError("Google engine not loaded")
 
-        self._audio_q: "queue.Queue[Optional[bytes]]" = queue.Queue()
-        self._closed = False
-
-        self._latest_partial: str = ""
-        self._final_accum: list[str] = []
-
-        # timings for parity with metrics
+        # metrics parity with Nemotron
         self.utt_preproc = 0.0
         self.utt_infer = 0.0
         self.utt_flush = 0.0
         self.chunks = 0
 
-        self._thread = threading.Thread(target=self._run_streaming, daemon=True)
+        # state init
+        self._reset_utterance_state()
+
+    # -------------------------
+    # session lifecycle
+    # -------------------------
+
+    def _reset_utterance_state(self):
+        # audio queue + thread state
+        self._audio_q: "queue.Queue[Optional[bytes]]" = queue.Queue()
+        self._closed = False
+
+        # transcript state
+        self._latest_partial: str = ""
+        self._last_partial_sent: str = ""   # DEDUPE KEY
+        self._final_parts: list[str] = []
+
+        # chunk counter should reset per utterance (matches Nemotron behavior)
+        self.chunks = 0
+
+        # restart worker thread
+        self._thread = threading.Thread(target=self._run_stream, daemon=True)
         self._thread.start()
 
-    def accept_pcm16(self, pcm16: bytes) -> None:
+    # -------------------------
+    # ASRSession interface
+    # -------------------------
+
+    def accept_pcm16(self, pcm16: bytes):
         if self._closed:
+            return
+        if not pcm16:
             return
         self._audio_q.put(pcm16)
         self.chunks += 1
 
     def step_if_ready(self) -> Optional[str]:
-        # return partial if present
-        if self._latest_partial:
-            return self._latest_partial
-        return None
+        """
+        Return a partial ONLY when it's NEW (prevents infinite repeat prints).
+        """
+        if not self._latest_partial:
+            return None
+
+        if self._latest_partial == self._last_partial_sent:
+            return None
+
+        self._last_partial_sent = self._latest_partial
+        return self._latest_partial
 
     def finalize(self, pad_ms: int) -> str:
-        # end stream
+        """
+        Close current Google stream, wait briefly for final results, return final text,
+        then RESET for next utterance (critical fix).
+        """
+        # Optional pad to help last phonemes (similar to your other engines)
+        if pad_ms and pad_ms > 0:
+            pad_samples = int(self.engine.sr * (pad_ms / 1000.0))
+            pad_bytes = b"\x00\x00" * pad_samples
+            try:
+                self._audio_q.put(pad_bytes)
+            except Exception:
+                pass
+
         if not self._closed:
             self._closed = True
             self._audio_q.put(None)
 
-        # small wait to allow thread to flush final results
         t0 = time.perf_counter()
-        self._thread.join(timeout=1.5)
+        self._thread.join(timeout=2.5)
         self.utt_flush += (time.perf_counter() - t0)
 
-        return " ".join([t for t in self._final_accum if t.strip()]).strip()
+        final_text = " ".join(self._final_parts).strip()
 
-    def _request_gen(self):
-        config = cloud_speech.RecognitionConfig(
-            auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
+        # ✅ CRITICAL: reset for next utterance so we don't repeat the same final forever
+        self._reset_utterance_state()
+
+        return final_text
+
+    # -------------------------
+    # internal: google request/response
+    # -------------------------
+
+    def _request_generator(self):
+        """
+        Uses ExplicitDecodingConfig for raw PCM16 streaming.
+        """
+
+        recognition_config = cloud_speech.RecognitionConfig(
+            explicit_decoding_config=cloud_speech.ExplicitDecodingConfig(
+                encoding=cloud_speech.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
+                sample_rate_hertz=self.engine.sr,
+                audio_channel_count=1,
+            ),
             language_codes=[self.engine.language_code],
             model=self.engine.model,
         )
 
         streaming_config = cloud_speech.StreamingRecognitionConfig(
-            config=config,
-            streaming_features=cloud_speech.StreamingRecognitionFeatures(
-                enable_partial_results=True
-            ),
+            config=recognition_config,
         )
 
-        # FIRST message MUST contain config
+        # First request must contain config
         yield cloud_speech.StreamingRecognizeRequest(
             recognizer=self.engine.recognizer,
             streaming_config=streaming_config,
         )
 
-        # Then stream audio
         while True:
             chunk = self._audio_q.get()
             if chunk is None:
-                return
+                break
 
-            yield cloud_speech.StreamingRecognizeRequest(
-                audio=chunk
-            )
+            yield cloud_speech.StreamingRecognizeRequest(audio=chunk)
 
-    def _run_streaming(self):
-        """
-        Runs blocking streaming_recognize in a background thread.
-        Updates _latest_partial and _final_accum.
-        """
+    def _run_stream(self):
         try:
             t_infer0 = time.perf_counter()
 
             responses = self.engine.client.streaming_recognize(
-                requests=self._request_gen()
+                requests=self._request_generator()
             )
 
-            for resp in responses:
-                # inference time accounting is approximate (network + server)
-                # but we keep it for parity.
+            for response in responses:
                 self.utt_infer += (time.perf_counter() - t_infer0)
                 t_infer0 = time.perf_counter()
 
-                for r in resp.results:
-                    if not r.alternatives:
-                        continue
-                    txt = (r.alternatives[0].transcript or "").strip()
-                    if not txt:
+                for result in response.results:
+                    if not result.alternatives:
                         continue
 
-                    if r.is_final:
-                        self._final_accum.append(txt)
-                        self._latest_partial = ""  # clear partial after final
+                    transcript = (result.alternatives[0].transcript or "").strip()
+                    if not transcript:
+                        continue
+
+                    if result.is_final:
+                        self._final_parts.append(transcript)
+                        # once final arrives, clear partial so dedupe resets naturally
+                        self._latest_partial = ""
+                        self._last_partial_sent = ""
                     else:
-                        self._latest_partial = txt
+                        self._latest_partial = transcript
 
-        except Exception:
-            # Do not crash server thread; treat as empty result
+        except Exception as e:
+            print("Google streaming error:", e)
             self._latest_partial = ""
+            self._last_partial_sent = ""
             return

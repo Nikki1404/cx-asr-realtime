@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import logging
+import os
 
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import Response
@@ -37,9 +38,16 @@ async def preload_engines():
             object.__setattr__(tmp_cfg, 'device', cfg.device)
             object.__setattr__(tmp_cfg, 'sample_rate', cfg.sample_rate)
             object.__setattr__(tmp_cfg, 'context_right', cfg.context_right)
-
+             
+            os.environ["https_proxy"] = "http://163.116.128.80:8080"
+            os.environ["http_proxy"] = "http://163.116.128.80:8080"
+            
             engine = build_engine(tmp_cfg)
             load_sec = engine.load()
+            
+            os.environ.pop("https_proxy", None)
+            os.environ.pop("http_proxy", None)
+            
             log.info(f" Preloaded {backend} ({model_name}) in {load_sec:.2f}s")
             ENGINE_CACHE[backend] = engine
             
@@ -68,7 +76,7 @@ async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.websocket("asr/realtime-custom-vad")
+@app.websocket("/asr/realtime-custom-vad")
 async def ws_asr(ws: WebSocket):
     await ws.accept()
 

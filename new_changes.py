@@ -254,6 +254,7 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
+backend	latency_ms	audio_sec_sent	ref_text	hyp_text	wer	error
 nemotron	2263	4.815	NOR IS MISTER QUILTER'S MANNER LESS INTERESTING THAN HIS MATTER	nor is mister Quilter's manner less interesting than his matter	0	
 whisper	4352	4.815	NOR IS MISTER QUILTER'S MANNER LESS INTERESTING THAN HIS MATTER	Nor is Mr. Quilter's manner less interesting than his matter.	0.1	
 google	4349	4.815	NOR IS MISTER QUILTER'S MANNER LESS INTERESTING THAN HIS MATTER	Nor is Mr. Quilter's mannerless interesting than his matter.	0.3	

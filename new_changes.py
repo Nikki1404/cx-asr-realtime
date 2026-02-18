@@ -312,7 +312,7 @@ async def process_one_triple(**kwargs):
 
 async def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
+    p.add_argument("--url", default="wss://whisperstream.exlservice.com:3000/asr/realtime-custom-vad")
     p.add_argument("--data-wav-root", required=True)
     p.add_argument("--raw-librispeech-root", required=True)
     p.add_argument("--max-files", type=int, default=20)

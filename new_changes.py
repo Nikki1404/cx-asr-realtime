@@ -352,3 +352,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+python bench_realtime_triple.py \
+    --data-wav-root /data/librispeech_wavs \
+    --raw-librispeech-root /data/LibriSpeech \
+    --max-files 5

@@ -342,3 +342,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+python bench.py --url "wss://whisperstream.exlservice.com:3000/asr/realtime-custom-vad" --data-wav-root "C:\datasets\librispeech_wavs" --raw-librispeech-root "C:\datasets\LibriSpeech" --max-files 5

@@ -354,6 +354,6 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 python bench_realtime_triple.py \
-    --data-wav-root /data/librispeech_wavs \
-    --raw-librispeech-root /data/LibriSpeech \
-    --max-files 5
+    --data-wav-root "C:\Users\re_nikitav\Documents\utils\utils\datasets\data\wav" \
+    --raw-librispeech-root "C:\Users\re_nikitav\Documents\utils\utils\datasets\data\raw\LibriSpeech" \
+    --max-files 45

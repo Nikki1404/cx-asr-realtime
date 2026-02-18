@@ -5,9 +5,10 @@ import json
 import time
 import uuid
 import wave
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 import jiwer
 import websockets
@@ -16,28 +17,64 @@ TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 
+
+# ==========================================================
+#            SAFE ABBREVIATION NORMALIZATION
+# ==========================================================
+
+ABBR_MAP: Dict[str, str] = {
+    "mr": "mister",
+    "mrs": "missus",
+    "ms": "miss",
+    "dr": "doctor",
+    "prof": "professor",
+    "jr": "junior",
+    "sr": "senior",
+}
+
+
+def pre_normalize_text(s: str) -> str:
+    """
+    Conservative normalization:
+    - lowercase
+    - remove punctuation
+    - collapse whitespace
+    """
+    s = s.lower()
+    s = re.sub(r"[^\w\s]", " ", s)  # remove punctuation
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+# jiwer token-level transform (no lowercase/punctuation here)
 transform = jiwer.Compose([
-    jiwer.ToLowerCase(),
-    jiwer.RemovePunctuation(),
+    jiwer.SubstituteWords(ABBR_MAP),
     jiwer.RemoveMultipleSpaces(),
     jiwer.Strip(),
     jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
 ])
+
+
+# ==========================================================
+#                    BENCHMARK STRUCT
+# ==========================================================
 
 @dataclass
 class BenchResult:
     subset: str
     file: str
     backend: str
-
     latency_ms: int
     audio_sec_sent: float
-
     ref_text: str
     hyp_text: str
     wer: Optional[float]
-
     error: Optional[str] = None
+
+
+# ==========================================================
+#                DATA LOADING HELPERS
+# ==========================================================
 
 def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
     utt_id = wav_path.stem
@@ -69,18 +106,18 @@ def silence_bytes(sec: float) -> bytes:
 
 
 def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
-    """
-    Example:
-    "2.0:0.5,5.0:1.0"
-    """
     if not spec:
         return []
-
     out = []
     for p in spec.split(","):
         at, dur = p.split(":")
         out.append((float(at), float(dur)))
     return sorted(out)
+
+
+# ==========================================================
+#                  WEBSOCKET TRANSCRIPTION
+# ==========================================================
 
 async def transcribe_ws(
     *,
@@ -92,7 +129,6 @@ async def transcribe_ws(
 
     async with websockets.connect(url, max_size=None) as ws:
 
-        # Send config
         await ws.send(json.dumps({
             "type": "config",
             "backend": backend,
@@ -117,12 +153,10 @@ async def transcribe_ws(
         frames_sent = 0
         audio_sec_sent = 0.0
         pause_idx = 0
-
         t_start = time.time()
 
         for chunk in iter_wav_chunks(wav_path):
 
-            # Inject pauses
             while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
                 dur = pause_plan[pause_idx][1]
                 await ws.send(silence_bytes(dur))
@@ -135,7 +169,6 @@ async def transcribe_ws(
             frames_sent += len(chunk) // 2
             audio_sec_sent = frames_sent / TARGET_SR
 
-        # Final flush
         await ws.send(silence_bytes(0.6))
         await ws.send(b"")
 
@@ -148,6 +181,10 @@ async def transcribe_ws(
 
         return " ".join(finals), audio_sec_sent, latency_ms
 
+
+# ==========================================================
+#                    FILE PROCESSING
+# ==========================================================
 
 async def process_one(
     *,
@@ -172,7 +209,11 @@ async def process_one(
 
         wer = None
         if ref and hyp:
-            wer = jiwer.wer(ref, hyp, transform, transform)
+            # Apply conservative normalization first
+            ref_n = pre_normalize_text(ref)
+            hyp_n = pre_normalize_text(hyp)
+
+            wer = jiwer.wer(ref_n, hyp_n, transform, transform)
             wer = round(float(wer), 4)
 
         return BenchResult(
@@ -206,6 +247,11 @@ async def process_one_triple(**kwargs):
         process_one(backend="whisper", **kwargs),
         process_one(backend="google", **kwargs),
     )
+
+
+# ==========================================================
+#                         MAIN
+# ==========================================================
 
 async def main():
     p = argparse.ArgumentParser()

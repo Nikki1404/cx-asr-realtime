@@ -21,7 +21,7 @@ CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 
 
 # ==========================================================
-#        ABBREVIATION + NUMBER NORMALIZATION (SAFE)
+#                NORMALIZATION POLICY
 # ==========================================================
 
 ABBR_MAP: Dict[str, str] = {
@@ -34,31 +34,63 @@ ABBR_MAP: Dict[str, str] = {
     "sr": "senior",
 }
 
+CONTRACTIONS = {
+    "don't": "do not",
+    "can't": "cannot",
+    "won't": "will not",
+    "it's": "it is",
+    "i'm": "i am",
+    "you're": "you are",
+    "they're": "they are",
+    "we're": "we are",
+    "he's": "he is",
+    "she's": "she is",
+}
+
+
+def expand_contractions(text: str) -> str:
+    for k, v in CONTRACTIONS.items():
+        text = re.sub(rf"\b{k}\b", v, text)
+    return text
+
 
 def normalize_numbers(text: str) -> str:
+    # %10 -> ten percent
+    text = re.sub(r"%(\d+)", lambda m: f"{num2words(int(m.group(1)))} percent", text)
+
+    # 10% -> ten percent
     text = re.sub(r"(\d+)%", lambda m: f"{num2words(int(m.group(1)))} percent", text)
+
+    # $10 -> ten dollars
     text = re.sub(r"\$(\d+)", lambda m: f"{num2words(int(m.group(1)))} dollars", text)
+
+    # 21st -> twenty first
     text = re.sub(
         r"\b(\d+)(st|nd|rd|th)\b",
         lambda m: num2words(int(m.group(1)), to="ordinal"),
         text,
     )
+
+    # 10 -> ten
     text = re.sub(
         r"\b\d+\b",
         lambda m: num2words(int(m.group())),
         text,
     )
+
     return text
 
 
-def pre_normalize_text(s: str) -> str:
-    s = s.lower()
-    s = normalize_numbers(s)
-    s = re.sub(r"[^\w\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+def pre_normalize_text(text: str) -> str:
+    text = text.lower()
+    text = expand_contractions(text)
+    text = normalize_numbers(text)
+    text = re.sub(r"[^\w\s]", " ", text)  # remove punctuation
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
+# jiwer token transform
 transform = jiwer.Compose([
     jiwer.SubstituteWords(ABBR_MAP),
     jiwer.RemoveMultipleSpaces(),
@@ -167,6 +199,7 @@ async def transcribe_ws(
         pause_idx = 0
         t_start = time.time()
 
+        # NON-REALTIME: send chunks immediately
         for chunk in iter_wav_chunks(wav_path):
 
             while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:

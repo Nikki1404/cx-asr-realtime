@@ -21,7 +21,7 @@ CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 
 
 # ==========================================================
-#           ABBREVIATION + NUMBER NORMALIZATION
+#        ABBREVIATION + NUMBER NORMALIZATION (SAFE)
 # ==========================================================
 
 ABBR_MAP: Dict[str, str] = {
@@ -36,38 +36,29 @@ ABBR_MAP: Dict[str, str] = {
 
 
 def normalize_numbers(text: str) -> str:
-    # Percentages: 10% -> ten percent
     text = re.sub(r"(\d+)%", lambda m: f"{num2words(int(m.group(1)))} percent", text)
-
-    # Currency: $10 -> ten dollars
     text = re.sub(r"\$(\d+)", lambda m: f"{num2words(int(m.group(1)))} dollars", text)
-
-    # Ordinals: 21st -> twenty first
     text = re.sub(
         r"\b(\d+)(st|nd|rd|th)\b",
         lambda m: num2words(int(m.group(1)), to="ordinal"),
         text,
     )
-
-    # Plain numbers: 10 -> ten
     text = re.sub(
         r"\b\d+\b",
         lambda m: num2words(int(m.group())),
         text,
     )
-
     return text
 
 
 def pre_normalize_text(s: str) -> str:
     s = s.lower()
     s = normalize_numbers(s)
-    s = re.sub(r"[^\w\s]", " ", s)  # remove punctuation
+    s = re.sub(r"[^\w\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
-# jiwer token transform
 transform = jiwer.Compose([
     jiwer.SubstituteWords(ABBR_MAP),
     jiwer.RemoveMultipleSpaces(),
@@ -174,11 +165,7 @@ async def transcribe_ws(
         frames_sent = 0
         audio_sec_sent = 0.0
         pause_idx = 0
-
         t_start = time.time()
-
-        loop = asyncio.get_event_loop()
-        stream_start = loop.time()
 
         for chunk in iter_wav_chunks(wav_path):
 
@@ -193,14 +180,6 @@ async def transcribe_ws(
 
             frames_sent += len(chunk) // 2
             audio_sec_sent = frames_sent / TARGET_SR
-
-            # Realtime pacing
-            expected_elapsed = audio_sec_sent
-            actual_elapsed = loop.time() - stream_start
-            sleep_time = expected_elapsed - actual_elapsed
-
-            if sleep_time > 0:
-                await asyncio.sleep(sleep_time)
 
         await ws.send(silence_bytes(0.6))
         await ws.send(b"")

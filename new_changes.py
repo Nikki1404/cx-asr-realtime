@@ -5,119 +5,39 @@ import json
 import time
 import uuid
 import wave
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple
 
 import jiwer
 import websockets
-from num2words import num2words
-
 
 TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 
-
-# ==========================================================
-#                PRODUCTION NORMALIZATION
-# ==========================================================
-
-# ---- Titles / Honorifics ----
-TITLE_SUBS = {
-    "mr": "mister",
-    "mrs": "missus",
-    "ms": "miss",
-    "dr": "doctor",
-    "prof": "professor",
-    "jr": "junior",
-    "sr": "senior",
-}
-
-# ---- Contractions ----
-CONTRACTIONS = {
-    "don't": "do not",
-    "can't": "cannot",
-    "won't": "will not",
-    "it's": "it is",
-    "i'm": "i am",
-    "you're": "you are",
-    "they're": "they are",
-    "we're": "we are",
-    "he's": "he is",
-    "she's": "she is",
-}
-
-
-def normalize_numbers(text: str) -> str:
-    # Percentages
-    text = re.sub(r"(\d+)%", lambda m: f"{num2words(int(m.group(1)))} percent", text)
-
-    # Currency
-    text = re.sub(r"\$(\d+)", lambda m: f"{num2words(int(m.group(1)))} dollars", text)
-
-    # Ordinals
-    text = re.sub(
-        r"\b(\d+)(st|nd|rd|th)\b",
-        lambda m: num2words(int(m.group(1)), to="ordinal"),
-        text,
-    )
-
-    # Plain integers
-    text = re.sub(
-        r"\b\d+\b",
-        lambda m: num2words(int(m.group())),
-        text,
-    )
-
-    return text
-
-
-def pre_normalize(text: str) -> str:
-    text = text.lower()
-
-    # Expand contractions
-    for k, v in CONTRACTIONS.items():
-        text = text.replace(k, v)
-
-    # Normalize numbers
-    text = normalize_numbers(text)
-
-    return text
-
-
-# jiwer token-level cleanup only (no Transform usage)
-production_transform = jiwer.Compose([
+transform = jiwer.Compose([
+    jiwer.ToLowerCase(),
     jiwer.RemovePunctuation(),
-    jiwer.SubstituteWords(TITLE_SUBS),
     jiwer.RemoveMultipleSpaces(),
     jiwer.Strip(),
     jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
 ])
-
-
-# ==========================================================
-#                    BENCHMARK STRUCT
-# ==========================================================
 
 @dataclass
 class BenchResult:
     subset: str
     file: str
     backend: str
+
     latency_ms: int
     audio_sec_sent: float
+
     ref_text: str
     hyp_text: str
-    raw_wer: Optional[float]
-    norm_wer: Optional[float]
+    wer: Optional[float]
+
     error: Optional[str] = None
-
-
-# ==========================================================
-#                DATA LOADING HELPERS
-# ==========================================================
 
 def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
     utt_id = wav_path.stem
@@ -149,18 +69,18 @@ def silence_bytes(sec: float) -> bytes:
 
 
 def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
+    """
+    Example:
+    "2.0:0.5,5.0:1.0"
+    """
     if not spec:
         return []
+
     out = []
     for p in spec.split(","):
         at, dur = p.split(":")
         out.append((float(at), float(dur)))
     return sorted(out)
-
-
-# ==========================================================
-#                  WEBSOCKET TRANSCRIPTION
-# ==========================================================
 
 async def transcribe_ws(
     *,
@@ -172,6 +92,7 @@ async def transcribe_ws(
 
     async with websockets.connect(url, max_size=None) as ws:
 
+        # Send config
         await ws.send(json.dumps({
             "type": "config",
             "backend": backend,
@@ -196,10 +117,12 @@ async def transcribe_ws(
         frames_sent = 0
         audio_sec_sent = 0.0
         pause_idx = 0
+
         t_start = time.time()
 
         for chunk in iter_wav_chunks(wav_path):
 
+            # Inject pauses
             while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
                 dur = pause_plan[pause_idx][1]
                 await ws.send(silence_bytes(dur))
@@ -212,6 +135,7 @@ async def transcribe_ws(
             frames_sent += len(chunk) // 2
             audio_sec_sent = frames_sent / TARGET_SR
 
+        # Final flush
         await ws.send(silence_bytes(0.6))
         await ws.send(b"")
 
@@ -224,10 +148,6 @@ async def transcribe_ws(
 
         return " ".join(finals), audio_sec_sent, latency_ms
 
-
-# ==========================================================
-#                    FILE PROCESSING
-# ==========================================================
 
 async def process_one(
     *,
@@ -250,26 +170,10 @@ async def process_one(
             pause_plan=pause_plan,
         )
 
-        raw_wer = None
-        norm_wer = None
-
+        wer = None
         if ref and hyp:
-            raw_wer = round(float(jiwer.wer(ref, hyp)), 4)
-
-            norm_ref = pre_normalize(ref)
-            norm_hyp = pre_normalize(hyp)
-
-            norm_wer = round(
-                float(
-                    jiwer.wer(
-                        norm_ref,
-                        norm_hyp,
-                        truth_transform=production_transform,
-                        hypothesis_transform=production_transform,
-                    )
-                ),
-                4,
-            )
+            wer = jiwer.wer(ref, hyp, transform, transform)
+            wer = round(float(wer), 4)
 
         return BenchResult(
             subset=subset,
@@ -279,8 +183,7 @@ async def process_one(
             audio_sec_sent=round(audio_sec, 3),
             ref_text=ref,
             hyp_text=hyp,
-            raw_wer=raw_wer,
-            norm_wer=norm_wer,
+            wer=wer,
         )
 
     except Exception as e:
@@ -292,8 +195,7 @@ async def process_one(
             audio_sec_sent=0.0,
             ref_text=ref,
             hyp_text="",
-            raw_wer=None,
-            norm_wer=None,
+            wer=None,
             error=str(e),
         )
 
@@ -305,14 +207,9 @@ async def process_one_triple(**kwargs):
         process_one(backend="google", **kwargs),
     )
 
-
-# ==========================================================
-#                         MAIN
-# ==========================================================
-
 async def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--url", default="wss://whisperstream.exlservice.com:3000/asr/realtime-custom-vad")
+    p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
     p.add_argument("--data-wav-root", required=True)
     p.add_argument("--raw-librispeech-root", required=True)
     p.add_argument("--max-files", type=int, default=20)
@@ -340,9 +237,7 @@ async def main():
         for r in triple:
             print(
                 f"{r.backend:9s} {r.file} "
-                f"latency={r.latency_ms}ms "
-                f"raw_wer={r.raw_wer} "
-                f"norm_wer={r.norm_wer}"
+                f"latency={r.latency_ms}ms wer={r.wer}"
             )
 
     out_csv = f"bench_realtime_triple_{uuid.uuid4().hex[:8]}.csv"

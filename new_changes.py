@@ -51,21 +51,13 @@ CONTRACTIONS = {
 
 
 def normalize_numbers(text: str) -> str:
-    """
-    Converts:
-    10 -> ten
-    21st -> twenty first
-    10% -> ten percent
-    $10 -> ten dollars
-    """
-
     # Percentages
     text = re.sub(r"(\d+)%", lambda m: f"{num2words(int(m.group(1)))} percent", text)
 
     # Currency
     text = re.sub(r"\$(\d+)", lambda m: f"{num2words(int(m.group(1)))} dollars", text)
 
-    # Ordinals (1st, 2nd, 3rd, 4th...)
+    # Ordinals
     text = re.sub(
         r"\b(\d+)(st|nd|rd|th)\b",
         lambda m: num2words(int(m.group(1)), to="ordinal"),
@@ -95,8 +87,8 @@ def pre_normalize(text: str) -> str:
     return text
 
 
+# jiwer token-level cleanup only (no Transform usage)
 production_transform = jiwer.Compose([
-    jiwer.Transform(lambda s: pre_normalize(s)),
     jiwer.RemovePunctuation(),
     jiwer.SubstituteWords(TITLE_SUBS),
     jiwer.RemoveMultipleSpaces(),
@@ -263,7 +255,21 @@ async def process_one(
 
         if ref and hyp:
             raw_wer = round(float(jiwer.wer(ref, hyp)), 4)
-            norm_wer = round(float(jiwer.wer(ref, hyp, production_transform, production_transform)), 4)
+
+            norm_ref = pre_normalize(ref)
+            norm_hyp = pre_normalize(hyp)
+
+            norm_wer = round(
+                float(
+                    jiwer.wer(
+                        norm_ref,
+                        norm_hyp,
+                        truth_transform=production_transform,
+                        hypothesis_transform=production_transform,
+                    )
+                ),
+                4,
+            )
 
         return BenchResult(
             subset=subset,
@@ -352,5 +358,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-python bench_realtime_triple.py --data-wav-root "C:\Users\re_nikitav\Documents\utils\utils\datasets\data\wav" --raw-librispeech-root "C:\Users\re_nikitav\Documents\utils\utils\datasets\data\raw\LibriSpeech" --max-files 45

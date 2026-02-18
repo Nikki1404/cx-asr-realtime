@@ -1,35 +1,255 @@
+import argparse
+import asyncio
+import csv
+import json
+import time
+import uuid
+import wave
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, List, Tuple
 
-[FINAL] Hva er a finnst hann i Dalm?
-[SERVER] reason=silence ttf_ms=5058 audio_ms=3360 rtf=0.6098328033182215 chunks=2
+import jiwer
+import websockets
 
-[FINAL] Thank you.
-[SERVER] reason=silence ttf_ms=1416 audio_ms=940 rtf=2.2631117033752357 chunks=3
+TARGET_SR = 16000
+CHUNK_MS = 80
+CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 
-[FINAL] Hello, hello, this is a testing via whisper.
-[SERVER] reason=silence ttf_ms=7052 audio_ms=4700 rtf=0.47609961579276366 chunks=4
+transform = jiwer.Compose([
+    jiwer.ToLowerCase(),
+    jiwer.RemovePunctuation(),
+    jiwer.RemoveMultipleSpaces(),
+    jiwer.Strip(),
+    jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
+])
 
-[FINAL] Can you hear me?
-[SERVER] reason=silence ttf_ms=3870 audio_ms=2560 rtf=0.9072841703982704 chunks=5
+@dataclass
+class BenchResult:
+    subset: str
+    file: str
+    backend: str
 
-[FINAL] Thank you.
-[SERVER] reason=silence ttf_ms=3169 audio_ms=2140 rtf=1.1218668823892024 chunks=6
+    latency_ms: int
+    audio_sec_sent: float
 
-[FINAL] I think, yes.
-[SERVER] reason=silence ttf_ms=3038 audio_ms=2040 rtf=1.21883508839471 chunks=7
+    ref_text: str
+    hyp_text: str
+    wer: Optional[float]
 
-[FINAL] I'm really happy to be here.
-[SERVER] reason=silence ttf_ms=3074 audio_ms=2080 rtf=1.243546232357263 chunks=8
+    error: Optional[str] = None
 
-[FINAL] He's a little bit.
-[SERVER] reason=silence ttf_ms=2070 audio_ms=1380 rtf=1.938921329902782 chunks=9
+def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
+    utt_id = wav_path.stem
+    rel = wav_path.relative_to(wav_root)
+    subset, spk, chap = rel.parts[:3]
 
-[FINAL] I'm not going to be able to.
-[SERVER] reason=silence ttf_ms=2463 audio_ms=1680 rtf=1.6526815281221865 chunks=10
+    trans = raw_root / subset / spk / chap / f"{spk}-{chap}.trans.txt"
+    if not trans.exists():
+        return ""
 
-[FINAL] Can we hear you?
-[SERVER] reason=silence ttf_ms=2633 audio_ms=1740 rtf=1.6446222414680083 chunks=11
+    with open(trans, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith(utt_id + " "):
+                return line.strip().split(" ", 1)[1]
+    return ""
 
-[FINAL] Thank you.
-[SERVER] reason=silence ttf_ms=1520 audio_ms=960 rtf=3.0611282001094273 chunks=12
 
-so what's happening when I am speaking in hindi it's transcribing something else only in english I just don't want to transcribe anything if it's not english language don't transcribe at all 
+def iter_wav_chunks(path: Path):
+    with wave.open(str(path), "rb") as wf:
+        while True:
+            data = wf.readframes(CHUNK_FRAMES)
+            if not data:
+                break
+            yield data
+
+
+def silence_bytes(sec: float) -> bytes:
+    return b"\x00\x00" * int(TARGET_SR * sec)
+
+
+def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
+    """
+    Example:
+    "2.0:0.5,5.0:1.0"
+    """
+    if not spec:
+        return []
+
+    out = []
+    for p in spec.split(","):
+        at, dur = p.split(":")
+        out.append((float(at), float(dur)))
+    return sorted(out)
+
+async def transcribe_ws(
+    *,
+    url: str,
+    backend: str,
+    wav_path: Path,
+    pause_plan: List[Tuple[float, float]],
+) -> Tuple[str, float, int]:
+
+    async with websockets.connect(url, max_size=None) as ws:
+
+        # Send config
+        await ws.send(json.dumps({
+            "type": "config",
+            "backend": backend,
+            "sampling_rate": TARGET_SR,
+            "chunk_ms": CHUNK_MS,
+        }))
+
+        finals = []
+        final_received = asyncio.Event()
+
+        async def receiver():
+            async for msg in ws:
+                if isinstance(msg, str):
+                    obj = json.loads(msg)
+                    if obj.get("type") == "final":
+                        if obj.get("text"):
+                            finals.append(obj["text"].strip())
+                        final_received.set()
+
+        recv_task = asyncio.create_task(receiver())
+
+        frames_sent = 0
+        audio_sec_sent = 0.0
+        pause_idx = 0
+
+        t_start = time.time()
+
+        for chunk in iter_wav_chunks(wav_path):
+
+            # Inject pauses
+            while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
+                dur = pause_plan[pause_idx][1]
+                await ws.send(silence_bytes(dur))
+                frames_sent += int(TARGET_SR * dur)
+                audio_sec_sent = frames_sent / TARGET_SR
+                pause_idx += 1
+
+            await ws.send(chunk)
+
+            frames_sent += len(chunk) // 2
+            audio_sec_sent = frames_sent / TARGET_SR
+
+        # Final flush
+        await ws.send(silence_bytes(0.6))
+        await ws.send(b"")
+
+        await asyncio.wait_for(final_received.wait(), timeout=30)
+
+        latency_ms = int((time.time() - t_start) * 1000)
+
+        await ws.close()
+        recv_task.cancel()
+
+        return " ".join(finals), audio_sec_sent, latency_ms
+
+
+async def process_one(
+    *,
+    wav_path: Path,
+    backend: str,
+    url: str,
+    wav_root: Path,
+    raw_root: Path,
+    pause_plan: List[Tuple[float, float]],
+) -> BenchResult:
+
+    subset = wav_path.relative_to(wav_root).parts[0]
+    ref = get_reference_text(wav_path, wav_root, raw_root)
+
+    try:
+        hyp, audio_sec, latency_ms = await transcribe_ws(
+            url=url,
+            backend=backend,
+            wav_path=wav_path,
+            pause_plan=pause_plan,
+        )
+
+        wer = None
+        if ref and hyp:
+            wer = jiwer.wer(ref, hyp, transform, transform)
+            wer = round(float(wer), 4)
+
+        return BenchResult(
+            subset=subset,
+            file=wav_path.name,
+            backend=backend,
+            latency_ms=latency_ms,
+            audio_sec_sent=round(audio_sec, 3),
+            ref_text=ref,
+            hyp_text=hyp,
+            wer=wer,
+        )
+
+    except Exception as e:
+        return BenchResult(
+            subset=subset,
+            file=wav_path.name,
+            backend=backend,
+            latency_ms=0,
+            audio_sec_sent=0.0,
+            ref_text=ref,
+            hyp_text="",
+            wer=None,
+            error=str(e),
+        )
+
+
+async def process_one_triple(**kwargs):
+    return await asyncio.gather(
+        process_one(backend="nemotron", **kwargs),
+        process_one(backend="whisper", **kwargs),
+        process_one(backend="google", **kwargs),
+    )
+
+async def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--url", default="ws://127.0.0.1:8002/ws/asr")
+    p.add_argument("--data-wav-root", required=True)
+    p.add_argument("--raw-librispeech-root", required=True)
+    p.add_argument("--max-files", type=int, default=20)
+    p.add_argument("--inject-pause", default="")
+    args = p.parse_args()
+
+    wav_root = Path(args.data_wav_root)
+    raw_root = Path(args.raw_librispeech_root)
+    wavs = sorted(wav_root.rglob("*.wav"))[: args.max_files]
+
+    pause_plan = parse_pause_spec(args.inject_pause)
+    results: List[BenchResult] = []
+
+    for wav in wavs:
+        triple = await process_one_triple(
+            wav_path=wav,
+            url=args.url,
+            wav_root=wav_root,
+            raw_root=raw_root,
+            pause_plan=pause_plan,
+        )
+
+        results.extend(triple)
+
+        for r in triple:
+            print(
+                f"{r.backend:9s} {r.file} "
+                f"latency={r.latency_ms}ms wer={r.wer}"
+            )
+
+    out_csv = f"bench_realtime_triple_{uuid.uuid4().hex[:8]}.csv"
+
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(BenchResult.__dataclass_fields__.keys())
+        for r in results:
+            w.writerow(r.__dict__.values())
+
+    print(f"\nSaved → {out_csv}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

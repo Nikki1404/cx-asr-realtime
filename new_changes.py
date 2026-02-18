@@ -5,10 +5,9 @@ import json
 import time
 import uuid
 import wave
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple
 
 import jiwer
 import websockets
@@ -17,47 +16,15 @@ TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 
-
-# ==========================================================
-#            SAFE ABBREVIATION NORMALIZATION
-# ==========================================================
-
-ABBR_MAP: Dict[str, str] = {
-    "mr": "mister",
-    "mrs": "missus",
-    "ms": "miss",
-    "dr": "doctor",
-    "prof": "professor",
-    "jr": "junior",
-    "sr": "senior",
-}
-
-
-def pre_normalize_text(s: str) -> str:
-    """
-    Conservative normalization:
-    - lowercase
-    - remove punctuation
-    - collapse whitespace
-    """
-    s = s.lower()
-    s = re.sub(r"[^\w\s]", " ", s)  # remove punctuation
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-# jiwer token-level transform (no lowercase/punctuation here)
+# Conservative transform (same as your working version)
 transform = jiwer.Compose([
-    jiwer.SubstituteWords(ABBR_MAP),
+    jiwer.ToLowerCase(),
+    jiwer.RemovePunctuation(),
     jiwer.RemoveMultipleSpaces(),
     jiwer.Strip(),
     jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
 ])
 
-
-# ==========================================================
-#                    BENCHMARK STRUCT
-# ==========================================================
 
 @dataclass
 class BenchResult:
@@ -71,10 +38,6 @@ class BenchResult:
     wer: Optional[float]
     error: Optional[str] = None
 
-
-# ==========================================================
-#                DATA LOADING HELPERS
-# ==========================================================
 
 def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
     utt_id = wav_path.stem
@@ -116,7 +79,7 @@ def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
 
 
 # ==========================================================
-#                  WEBSOCKET TRANSCRIPTION
+#              REAL-TIME TRANSCRIPTION + LIVE WER
 # ==========================================================
 
 async def transcribe_ws(
@@ -125,7 +88,8 @@ async def transcribe_ws(
     backend: str,
     wav_path: Path,
     pause_plan: List[Tuple[float, float]],
-) -> Tuple[str, float, int]:
+    reference_text: str,
+):
 
     async with websockets.connect(url, max_size=None) as ws:
 
@@ -136,25 +100,45 @@ async def transcribe_ws(
             "chunk_ms": CHUNK_MS,
         }))
 
+        partial_text = ""
         finals = []
-        final_received = asyncio.Event()
-
-        async def receiver():
-            async for msg in ws:
-                if isinstance(msg, str):
-                    obj = json.loads(msg)
-                    if obj.get("type") == "final":
-                        if obj.get("text"):
-                            finals.append(obj["text"].strip())
-                        final_received.set()
-
-        recv_task = asyncio.create_task(receiver())
-
         frames_sent = 0
         audio_sec_sent = 0.0
         pause_idx = 0
+
         t_start = time.time()
 
+        async def receiver():
+            nonlocal partial_text
+            async for msg in ws:
+                if isinstance(msg, str):
+                    obj = json.loads(msg)
+
+                    if obj.get("type") in ["partial", "final"]:
+                        text = obj.get("text", "").strip()
+
+                        if obj.get("type") == "partial":
+                            partial_text = text
+                        else:
+                            finals.append(text)
+                            partial_text = ""
+
+                        current_hyp = " ".join(
+                            finals + ([partial_text] if partial_text else [])
+                        )
+
+                        if reference_text:
+                            live_wer = jiwer.wer(
+                                reference_text,
+                                current_hyp,
+                                transform,
+                                transform
+                            )
+                            print(f"[{backend}] LIVE WER: {round(float(live_wer),4)}")
+
+        recv_task = asyncio.create_task(receiver())
+
+        # Stream audio continuously
         for chunk in iter_wav_chunks(wav_path):
 
             while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
@@ -169,17 +153,23 @@ async def transcribe_ws(
             frames_sent += len(chunk) // 2
             audio_sec_sent = frames_sent / TARGET_SR
 
-        await ws.send(silence_bytes(0.6))
+            # True realtime pacing
+            await asyncio.sleep(CHUNK_MS / 1000)
+
+        # End stream cleanly
         await ws.send(b"")
 
-        await asyncio.wait_for(final_received.wait(), timeout=30)
+        # Allow last partial/final messages to arrive
+        await asyncio.sleep(1)
 
         latency_ms = int((time.time() - t_start) * 1000)
 
         await ws.close()
         recv_task.cancel()
 
-        return " ".join(finals), audio_sec_sent, latency_ms
+        final_text = " ".join(finals)
+
+        return final_text, audio_sec_sent, latency_ms
 
 
 # ==========================================================
@@ -205,15 +195,12 @@ async def process_one(
             backend=backend,
             wav_path=wav_path,
             pause_plan=pause_plan,
+            reference_text=ref,
         )
 
         wer = None
         if ref and hyp:
-            # Apply conservative normalization first
-            ref_n = pre_normalize_text(ref)
-            hyp_n = pre_normalize_text(hyp)
-
-            wer = jiwer.wer(ref_n, hyp_n, transform, transform)
+            wer = jiwer.wer(ref, hyp, transform, transform)
             wer = round(float(wer), 4)
 
         return BenchResult(
@@ -283,7 +270,7 @@ async def main():
         for r in triple:
             print(
                 f"{r.backend:9s} {r.file} "
-                f"latency={r.latency_ms}ms wer={r.wer}"
+                f"latency={r.latency_ms}ms final_wer={r.wer}"
             )
 
     out_csv = f"bench_realtime_triple_{uuid.uuid4().hex[:8]}.csv"

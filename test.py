@@ -5,7 +5,6 @@ import json
 import time
 import uuid
 import wave
-from typing import List
 
 import boto3
 import jiwer
@@ -14,7 +13,9 @@ import websockets
 from whisper_normalizer.english import EnglishTextNormalizer
 
 
+# -------------------------------------------------
 # CONFIG
+# -------------------------------------------------
 TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
@@ -41,7 +42,9 @@ def normalize(txt):
     return whisper_norm(txt or "")
 
 
-# S3
+# -------------------------------------------------
+# S3 HELPERS
+# -------------------------------------------------
 def s3_client(region):
     return boto3.client("s3", region_name=region)
 
@@ -68,7 +71,9 @@ def read_bytes(s3, bucket, key):
     return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
 
 
+# -------------------------------------------------
 # AUDIO
+# -------------------------------------------------
 def wav_to_pcm(wav_blob):
     with wave.open(io.BytesIO(wav_blob), "rb") as wf:
         return wf.readframes(wf.getnframes())
@@ -83,7 +88,9 @@ def silence(sec):
     return b"\x00\x00" * int(TARGET_SR * sec)
 
 
-# WEBSOCKET TRANSCRIBE 
+# -------------------------------------------------
+# REALTIME TRANSCRIBE (FIXED)
+# -------------------------------------------------
 async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
     async with websockets.connect(url, max_size=None) as ws:
@@ -113,19 +120,18 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
         t0 = time.time()
 
-        #  REALTIME FIX
+        # ⭐ REALTIME pacing
         for c in iter_chunks(pcm):
             await ws.send(c)
-            await asyncio.sleep(CHUNK_MS / 1000)  
+            await asyncio.sleep(CHUNK_MS / 1000)
 
-        # end speech
         await ws.send(silence(0.8))
         await ws.send(b"")
 
         try:
             await asyncio.wait_for(done.wait(), timeout=timeout_sec)
         except asyncio.TimeoutError:
-            print(f"[WARN] timeout ({backend}) — using partial transcript")
+            print(f"[WARN] timeout ({backend}) → using partial output")
 
         latency = int((time.time() - t0) * 1000)
 
@@ -134,7 +140,9 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
         return " ".join(finals).strip(), latency
 
 
+# -------------------------------------------------
 # MAIN
+# -------------------------------------------------
 async def main():
 
     parser = argparse.ArgumentParser()
@@ -173,33 +181,46 @@ async def main():
                 transcribe_ws(args.url, "whisper", pcm),
             )
 
+            # NORMALIZED TEXTS
             ref_n = normalize(ref)
             g_n = normalize(g)
             n_n = normalize(n)
             w_n = normalize(w)
 
             rows.append({
+
                 "filename": folder,
+
                 "latency_google": lg,
                 "latency_nemotron": ln,
                 "latency_whisper": lw,
+
                 "reference_text": ref,
                 "transcript_google": g,
                 "transcript_nemotron": n,
                 "transcript_whisper": w,
+
+                # ⭐ requested normalized columns
+                "normalized_reference_text": ref_n,
+                "normalized_transcript_google": g_n,
+                "normalized_transcript_nemotron": n_n,
+                "normalized_transcript_whisper": w_n,
+
                 "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
                 "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
                 "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
+
                 "normalized_wer_google": jiwer.wer(ref_n, g_n, norm_transform, norm_transform),
                 "normalized_wer_nemotron": jiwer.wer(ref_n, n_n, norm_transform, norm_transform),
                 "normalized_wer_whisper": jiwer.wer(ref_n, w_n, norm_transform, norm_transform),
+
                 "error": "",
             })
 
             print("DONE:", folder)
 
         except Exception as e:
-            print(f"ERROR: {folder} -> {e}")
+            print("ERROR:", folder, "->", e)
             rows.append({"filename": folder, "error": str(e)})
 
     df = pd.DataFrame(rows)

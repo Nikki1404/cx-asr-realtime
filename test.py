@@ -190,9 +190,9 @@ async def main():
             rows.append({
                 "filename": folder,
 
-                "latency_google": lg,
-                "latency_nemotron": ln,
-                "latency_whisper": lw,
+                "latency_ms_google": lg,
+                "latency__ms_nemotron": ln,
+                "latency_ms_whisper": lw,
 
                 "reference_text": ref,
                 "transcript_google": g,
@@ -211,8 +211,6 @@ async def main():
                 "normalized_wer_google": jiwer.wer(ref_n, g_n, norm_transform, norm_transform),
                 "normalized_wer_nemotron": jiwer.wer(ref_n, n_n, norm_transform, norm_transform),
                 "normalized_wer_whisper": jiwer.wer(ref_n, w_n, norm_transform, norm_transform),
-
-                "error": "",
             })
 
             print("DONE:", folder)

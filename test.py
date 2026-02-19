@@ -90,7 +90,7 @@ def silence(sec):
 
 
 # -------------------------------------------------
-# WEBSOCKET TRANSCRIBE (FINAL VERSION)
+# WEBSOCKET TRANSCRIBE (REALTIME FIX)
 # -------------------------------------------------
 async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
@@ -110,6 +110,7 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
             async for msg in ws:
                 if not isinstance(msg, str):
                     continue
+
                 obj = json.loads(msg)
 
                 if obj.get("type") == "final":
@@ -122,12 +123,13 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
         t0 = time.time()
 
-        # ⭐ FAST STREAMING (NO SLEEP)
+        # ⭐ TRUE REALTIME STREAMING (LOCAL-LIKE)
         for c in iter_chunks(pcm):
             await ws.send(c)
+            await asyncio.sleep(CHUNK_MS / 1000)
 
-        # ⭐ STRONG END SIGNAL
-        await ws.send(silence(2.0))
+        # endpoint signal
+        await ws.send(silence(1.0))
         await ws.send(b"")
 
         await asyncio.wait_for(done.wait(), timeout=timeout_sec)
@@ -181,7 +183,6 @@ async def main():
                 transcribe_ws(args.url, "whisper", pcm),
             )
 
-            # NORMALIZED TEXT
             ref_n = normalize(ref)
             g_n = normalize(g)
             n_n = normalize(n)
@@ -191,7 +192,7 @@ async def main():
                 "filename": folder,
 
                 "latency_ms_google": lg,
-                "latency__ms_nemotron": ln,
+                "latency_ms_nemotron": ln,
                 "latency_ms_whisper": lw,
 
                 "reference_text": ref,
@@ -199,14 +200,14 @@ async def main():
                 "transcript_nemotron": n,
                 "transcript_whisper": w,
 
+                "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
+                "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
+                "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
+
                 "normalized_ref_text": ref_n,
                 "normalized_transcript_google": g_n,
                 "normalized_transcript_nemotron": n_n,
                 "normalized_transcript_whisper": w_n,
-
-                "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
-                "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
-                "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
 
                 "normalized_wer_google": jiwer.wer(ref_n, g_n, norm_transform, norm_transform),
                 "normalized_wer_nemotron": jiwer.wer(ref_n, n_n, norm_transform, norm_transform),

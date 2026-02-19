@@ -1,101 +1,42 @@
-import argparse
-import asyncio
-import io
-import json
-import time
-import uuid
-import wave
-from typing import List
-
-import boto3
-import jiwer
-import pandas as pd
 import websockets
-from whisper_normalizer.english import EnglishTextNormalizer
+from pathlib import Path
+from typing import Optional, List, Tuple
+import json
+import asyncio
+import wave
+import time
 
+import jiwer
+import uuid
+from config import models
+import pandas as pd
+from tqdm import tqdm
 
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
 TARGET_SR = 16000
 CHUNK_MS = 80
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
-CHUNK_BYTES = CHUNK_FRAMES * 2
 
-whisper_norm = EnglishTextNormalizer()
+def iter_wav_chunks(path: Path):
+    with wave.open(str(path), "rb") as wf:
+        while True:
+            data = wf.readframes(CHUNK_FRAMES)
+            if not data:
+                break
+            yield data
 
-raw_transform = jiwer.Compose([
-    jiwer.ToLowerCase(),
-    jiwer.RemovePunctuation(),
-    jiwer.RemoveMultipleSpaces(),
-    jiwer.Strip(),
-    jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
-])
-
-norm_transform = jiwer.Compose([
-    jiwer.RemoveMultipleSpaces(),
-    jiwer.Strip(),
-    jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
-])
-
-
-def normalize(txt):
-    return whisper_norm(txt or "")
-
-
-# -------------------------------------------------
-# S3 HELPERS
-# -------------------------------------------------
-def s3_client(region):
-    return boto3.client("s3", region_name=region)
-
-
-def list_folders(s3, bucket, prefix):
-    resp = s3.list_objects_v2(
-        Bucket=bucket,
-        Prefix=prefix,
-        Delimiter="/"
-    )
-    return [x["Prefix"] for x in resp.get("CommonPrefixes", [])]
-
-
-def list_objects(s3, bucket, prefix):
-    resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    return [x["Key"] for x in resp.get("Contents", [])]
-
-
-def read_text(s3, bucket, key):
-    return s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode().strip()
-
-
-def read_bytes(s3, bucket, key):
-    return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
-
-
-# -------------------------------------------------
-# AUDIO HELPERS
-# -------------------------------------------------
-def wav_to_pcm(wav_blob):
-    with wave.open(io.BytesIO(wav_blob), "rb") as wf:
-        return wf.readframes(wf.getnframes())
-
-
-def iter_chunks(pcm):
-    for i in range(0, len(pcm), CHUNK_BYTES):
-        yield pcm[i:i + CHUNK_BYTES]
-
-
-def silence(sec):
+def silence_bytes(sec: float) -> bytes:
     return b"\x00\x00" * int(TARGET_SR * sec)
 
-
-# -------------------------------------------------
-# WEBSOCKET TRANSCRIBE (REALTIME FIX)
-# -------------------------------------------------
-async def transcribe_ws(url, backend, pcm, timeout_sec=120):
+async def transcribe_ws(
+    *,
+    url: str,
+    backend: str,
+    wav_path: Path,
+) -> Tuple[str, float, int]:
 
     async with websockets.connect(url, max_size=None) as ws:
 
+        # Send config
         await ws.send(json.dumps({
             "type": "config",
             "backend": backend,
@@ -104,132 +45,171 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
         }))
 
         finals = []
-        done = asyncio.Event()
+        final_received = asyncio.Event()
 
         async def receiver():
             async for msg in ws:
-                if not isinstance(msg, str):
-                    continue
-
-                obj = json.loads(msg)
-
-                if obj.get("type") == "final":
-                    txt = (obj.get("text") or "").strip()
-                    if txt:
-                        finals.append(txt)
-                    done.set()
+                if isinstance(msg, str):
+                    obj = json.loads(msg)
+                    if obj.get("type") == "final":
+                        if obj.get("text"):
+                            finals.append(obj["text"].strip())
+                        final_received.set()
 
         recv_task = asyncio.create_task(receiver())
 
-        t0 = time.time()
+        frames_sent = 0
+        audio_sec_sent = 0.0
 
-        # ⭐ TRUE REALTIME STREAMING (LOCAL-LIKE)
-        for c in iter_chunks(pcm):
-            await ws.send(c)
-            await asyncio.sleep(CHUNK_MS / 1000)
+        t_start = time.time()
 
-        # endpoint signal
-        await ws.send(silence(1.0))
+        for chunk in iter_wav_chunks(wav_path):
+            await ws.send(chunk)
+            frames_sent += len(chunk) // 2
+            audio_sec_sent = frames_sent / TARGET_SR
+
+        # finalize
+        await ws.send(silence_bytes(0.6))
         await ws.send(b"")
 
-        await asyncio.wait_for(done.wait(), timeout=timeout_sec)
+        await asyncio.wait_for(final_received.wait(), timeout=30)
 
-        latency = int((time.time() - t0) * 1000)
+        latency_ms = int((time.time() - t_start) * 1000)
 
+        await ws.close()
         recv_task.cancel()
 
-        return " ".join(finals).strip(), latency
+        return " ".join(finals), audio_sec_sent, latency_ms
+
+# =========================
+# TEXT NORMALIZATION
+# =========================
+transform = jiwer.Compose([
+    jiwer.ToLowerCase(),
+    jiwer.RemovePunctuation(),
+    jiwer.RemoveMultipleSpaces(),
+    jiwer.Strip(),
+    jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
+])
+
+# =========================
+# REFERENCE LOOKUP
+# =========================
+def get_reference_text(txt_path: Path) -> str:
+    with open(txt_path, "r", encoding="utf-8") as file:
+        content = file.read()
+    return content
 
 
-# -------------------------------------------------
-# MAIN
-# -------------------------------------------------
-async def main():
+# =========================
+# SINGLE BACKEND
+# =========================
+async def get_benchmark_result(
+    *,
+    wav_path: Path,
+    url: str,
+    ref: str,
+    backend: str,
+) -> dict:
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--bucket", default="cx-speech")
-    parser.add_argument("--prefix", default="asr-realtime/benchmarking-data-3/")
-    parser.add_argument("--region", default="us-east-1")
-    parser.add_argument("--url", required=True)
-    parser.add_argument("--max-files", type=int, default=0)
+    try:
+        hyp, audio_sec, latency_ms = await transcribe_ws(
+            url=url,
+            backend=backend,
+            wav_path=wav_path,
+        )
 
-    args = parser.parse_args()
-
-    s3 = s3_client(args.region)
-
-    folders = list_folders(s3, args.bucket, args.prefix)
-
-    if args.max_files > 0:
-        folders = folders[:args.max_files]
-
-    rows = []
-
-    for folder in folders:
-
-        try:
-            keys = list_objects(s3, args.bucket, folder)
-
-            wav_key = [k for k in keys if k.endswith(".wav")][0]
-            txt_key = [k for k in keys if k.endswith("transcript.txt")][0]
-
-            ref = read_text(s3, args.bucket, txt_key)
-            wav_blob = read_bytes(s3, args.bucket, wav_key)
-
-            pcm = wav_to_pcm(wav_blob)
-
-            (g, lg), (n, ln), (w, lw) = await asyncio.gather(
-                transcribe_ws(args.url, "google", pcm),
-                transcribe_ws(args.url, "nemotron", pcm),
-                transcribe_ws(args.url, "whisper", pcm),
+        wer = None
+        if ref and hyp:
+            wer = jiwer.wer(
+                reference=ref,
+                hypothesis=hyp,
+                reference_transform=transform,
+                hypothesis_transform=transform
             )
+            wer = round(float(wer), 4)
 
-            ref_n = normalize(ref)
-            g_n = normalize(g)
-            n_n = normalize(n)
-            w_n = normalize(w)
+        return wer, latency_ms, hyp
 
-            rows.append({
-                "filename": folder,
+    except Exception as e:
+        print("error: ", e)
+        return None
+    
 
-                "latency_ms_google": lg,
-                "latency_ms_nemotron": ln,
-                "latency_ms_whisper": lw,
+async def process_models(
+        filename: str,
+        txt_path: str,
+        **kwargs):
 
-                "reference_text": ref,
-                "transcript_google": g,
-                "transcript_nemotron": n,
-                "transcript_whisper": w,
+    ref = get_reference_text(txt_path)
 
-                "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
-                "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
-                "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
+    bench_result = {
+        "file": filename,
+        "ref_text": ref
+    }
 
-                "normalized_ref_text": ref_n,
-                "normalized_transcript_google": g_n,
-                "normalized_transcript_nemotron": n_n,
-                "normalized_transcript_whisper": w_n,
+    for model in models:
+        wer, latency, transcript = await get_benchmark_result(backend=model, ref=ref, **kwargs)
+        bench_result[f"wer_{model}"] = wer
+        bench_result[f"latency_{model}"] = latency
+        bench_result[f"transcript_{model}"] = transcript
 
-                "normalized_wer_google": jiwer.wer(ref_n, g_n, norm_transform, norm_transform),
-                "normalized_wer_nemotron": jiwer.wer(ref_n, n_n, norm_transform, norm_transform),
-                "normalized_wer_whisper": jiwer.wer(ref_n, w_n, norm_transform, norm_transform),
-            })
+    return bench_result
 
-            print("DONE:", folder)
+# =========================
+# MAIN
+# =========================
+async def main():
+    """
+        - test-cases <------ root_path
+            - test1
+                - audio1.wav
+                - ref1.txt
+            - test2
+                - audio2.wav
+                - ref2.txt
+            .
+            .
+            .
+    """
+    url = "wss://cx-asr.exlservice.com/asr/realtime-custom-vad"
 
-        except Exception as e:
-            print(f"ERROR: {folder} -> {type(e).__name__}: {e}")
-            rows.append({
-                "filename": folder,
-                "error": str(e)
-            })
+    root_path = Path(input("Enter you test folder path: "))
 
-    df = pd.DataFrame(rows)
+    num_models = len(models)
+    columns = ['']*(3*num_models+2)
+    columns[0] = 'file'
+    columns[2*num_models+1] = 'ref_text'
 
-    out = f"bench_s3_wide_{uuid.uuid4().hex[:8]}.csv"
-    df.to_csv(out, index=False)
+    for idx, model in enumerate(models):
+        columns[idx+1] = f'wer_{model}'
+        columns[idx+1+num_models] = f'latency_{model}'
+        columns[idx+2+2*num_models] = f'transcript_{model}'
 
-    print("\nSaved →", out)
+    df = pd.DataFrame(columns=columns)
 
+    for subfolder in tqdm(root_path.iterdir(), total=len(list(root_path.iterdir()))):
+        if subfolder.is_dir():
+            print(subfolder)
+            wav_path = next(subfolder.glob("*.wav"), None)
+            txt_path = next(subfolder.glob("*.txt"), None)
+
+            if wav_path and txt_path:
+                try:
+                    bench_result = await process_models(
+                        filename=subfolder.relative_to(root_path),
+                        wav_path=wav_path,
+                        url=url,
+                        txt_path=txt_path,
+                    )
+                    df.loc[len(df)] =  bench_result
+                except Exception as e:
+                    print(e)
+
+    save_filename = f"bench_realtime_dual_{uuid.uuid4().hex[:8]}.xlsx"
+    df.to_excel(save_filename, index=False)
+
+    print(f"\nSaved → {save_filename}")
 
 if __name__ == "__main__":
     asyncio.run(main())

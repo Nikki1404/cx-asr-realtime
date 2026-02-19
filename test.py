@@ -410,4 +410,8 @@ python .\bench_s3_wide.py `
   --subset-label "dev-clean"
 
 getting this 
+Default output format [None]:
+(client_env) PS C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts> aws s3 ls s3://cx-speech
+
+An error occurred (InvalidAccessKeyId) when calling the ListObjectsV2 operation: The AWS Access Key Id you provided does not exist in our records.
 

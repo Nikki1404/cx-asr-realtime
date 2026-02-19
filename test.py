@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 import wave
+from typing import List
 
 import boto3
 import jiwer
@@ -43,7 +44,7 @@ def normalize(txt):
 
 
 # -------------------------------------------------
-# S3 HELPERS
+# S3
 # -------------------------------------------------
 def s3_client(region):
     return boto3.client("s3", region_name=region)
@@ -89,7 +90,7 @@ def silence(sec):
 
 
 # -------------------------------------------------
-# REALTIME TRANSCRIBE (FIXED)
+# WEBSOCKET TRANSCRIBE
 # -------------------------------------------------
 async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
@@ -120,7 +121,6 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
         t0 = time.time()
 
-        # ⭐ REALTIME pacing
         for c in iter_chunks(pcm):
             await ws.send(c)
             await asyncio.sleep(CHUNK_MS / 1000)
@@ -131,7 +131,7 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
         try:
             await asyncio.wait_for(done.wait(), timeout=timeout_sec)
         except asyncio.TimeoutError:
-            print(f"[WARN] timeout ({backend}) → using partial output")
+            print(f"[WARN] timeout ({backend}) — using partial transcript")
 
         latency = int((time.time() - t0) * 1000)
 
@@ -181,19 +181,19 @@ async def main():
                 transcribe_ws(args.url, "whisper", pcm),
             )
 
-            # NORMALIZED TEXTS
+            # NORMALIZED STRINGS
             ref_n = normalize(ref)
             g_n = normalize(g)
             n_n = normalize(n)
             w_n = normalize(w)
 
             rows.append({
-
                 "filename": folder,
 
                 "latency_google": lg,
                 "latency_nemotron": ln,
                 "latency_whisper": lw,
+
                 "reference_text": ref,
                 "transcript_google": g,
                 "transcript_nemotron": n,
@@ -201,7 +201,7 @@ async def main():
                 "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
                 "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
                 "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
-                "normalized_reference_text": ref_n,
+                "normalized_ref_text": ref_n,
                 "normalized_transcript_google": g_n,
                 "normalized_transcript_nemotron": n_n,
                 "normalized_transcript_whisper": w_n,
@@ -215,7 +215,7 @@ async def main():
             print("DONE:", folder)
 
         except Exception as e:
-            print("ERROR:", folder, "->", e)
+            print(f"ERROR: {folder} -> {e}")
             rows.append({"filename": folder, "error": str(e)})
 
     df = pd.DataFrame(rows)

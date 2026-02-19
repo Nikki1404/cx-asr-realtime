@@ -1,5 +1,7 @@
 import time
 from typing import Optional
+import unicodedata
+import re
 
 import numpy as np
 import torch
@@ -8,13 +10,48 @@ from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 from app.asr_engines.base import ASREngine, EngineCaps
 
 
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")  # Hindi script range
+_ALLOWED_ASCII_RE = re.compile(r"^[\x00-\x7F]+$")  # basic ASCII
+
+
+def _ascii_fold(s: str) -> str:
+    """
+    Convert accented Latin chars to closest ASCII (Halló -> Hallo).
+    Keeps ASCII punctuation/numbers.
+    """
+    s = unicodedata.normalize("NFKD", s)
+    return s.encode("ascii", "ignore").decode("ascii", "ignore")
+
+
+def _english_only_filter(text: str) -> str:
+    """
+    Enforce 'flush only English' in a practical way:
+    - If Devanagari appears -> drop completely.
+    - Otherwise fold accents to ASCII.
+    - If still contains non-ASCII -> drop.
+    """
+    if not text:
+        return ""
+
+    # Hard block Hindi/Devanagari output
+    if _DEVANAGARI_RE.search(text):
+        return ""
+
+    folded = _ascii_fold(text).strip()
+
+    # If anything non-ascii remains after folding -> drop
+    if folded and not _ALLOWED_ASCII_RE.match(folded):
+        return ""
+
+    return folded
+
+
 class WhisperTurboASR(ASREngine):
     """
     Chunked (non-streaming) ASR using Whisper Turbo.
 
-    - English-only enforced
-    - No language auto-detection
-    - No translation mode
+    - English prompt enforced (no language auto-detection prompt)
+    - Post-filter drops Hindi/Devanagari and non-ASCII outputs
     - Final transcription only
     """
 
@@ -31,89 +68,60 @@ class WhisperTurboASR(ASREngine):
 
         self.model = None
         self.processor = None
-        self.forced_decoder_ids = None  # 🔥 added
-
+        self.forced_decoder_ids = None
 
     def load(self) -> float:
-        """
-        Load Whisper model + processor (GPU-only, OOM-safe).
-        """
         t0 = time.time()
 
         self.processor = AutoProcessor.from_pretrained(self.model_name)
-
-        # OOM-safe loading
         self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
             self.model_name,
-            device_map="cuda",
-            load_in_8bit=True,
+            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
             low_cpu_mem_usage=True,
         )
 
+        if self.device == "cuda":
+            self.model = self.model.cuda()
+        else:
+            self.model = self.model.cpu()
+
         self.model.eval()
 
-        #  FORCE ENGLISH ONLY
+        # Force decoder prompt to English transcription
         self.forced_decoder_ids = self.processor.get_decoder_prompt_ids(
             language="en",
             task="transcribe",
         )
 
-        # Warmup (prevents first-request latency spike)
         self._warmup()
-
         return time.time() - t0
-
 
     @torch.inference_mode()
     def _warmup(self):
-        """
-        Warm up with ~1s of silence.
-        """
         try:
             silence = np.zeros(int(self.sr * 1.0), dtype=np.float32)
-
             inputs = self.processor(
                 silence,
                 sampling_rate=self.sr,
                 return_tensors="pt",
             )
-
-            inputs = {
-                k: v.to(
-                    device=self.model.device,
-                    dtype=self.model.dtype
-                )
-                for k, v in inputs.items()
-            }
-
+            inputs = {k: v.to(device=self.model.device, dtype=self.model.dtype) for k, v in inputs.items()}
             _ = self.model.generate(
                 **inputs,
-                forced_decoder_ids=self.forced_decoder_ids,  #  enforce English
+                forced_decoder_ids=self.forced_decoder_ids,
+                max_new_tokens=16,
             )
-
         except Exception:
-            # Never crash startup
             pass
-
 
     def new_session(self, max_buffer_ms: int):
         return WhisperSession(self, max_buffer_ms=max_buffer_ms)
 
 
-
 class WhisperSession:
-    """
-    Per-utterance session for Whisper.
-
-    - Buffers audio until finalize()
-    - No partial outputs
-    - Single forward pass on finalize
-    """
-
     def __init__(self, engine: WhisperTurboASR, max_buffer_ms: int):
         self.engine = engine
         self.max_buffer_samples = int(engine.sr * (max_buffer_ms / 1000.0))
-
         self.audio = np.array([], dtype=np.float32)
 
         self.utt_preproc = 0.0
@@ -121,37 +129,23 @@ class WhisperSession:
         self.utt_flush = 0.0
         self.chunks = 0
 
-
     def accept_pcm16(self, pcm16: bytes):
-        """
-        Append PCM16 audio to buffer.
-        """
         x = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         self.audio = np.concatenate([self.audio, x])
-
         if len(self.audio) > self.max_buffer_samples:
             self.audio = self.audio[-self.max_buffer_samples:]
 
-
     def step_if_ready(self) -> Optional[str]:
-        """
-        Whisper does NOT support partials.
-        """
         return None
-
 
     @torch.inference_mode()
     def finalize(self, pad_ms: int) -> str:
-        """
-        Run full Whisper transcription (English-only).
-        """
         if len(self.audio) == 0:
             return ""
 
         pad = np.zeros(int(self.engine.sr * (pad_ms / 1000.0)), dtype=np.float32)
         audio = np.concatenate([self.audio, pad])
 
-        # Preprocess
         t0 = time.perf_counter()
         inputs = self.engine.processor(
             audio,
@@ -160,13 +154,7 @@ class WhisperSession:
         )
         self.utt_preproc += (time.perf_counter() - t0)
 
-        inputs = {
-            k: v.to(
-                device=self.engine.model.device,
-                dtype=self.engine.model.dtype
-            )
-            for k, v in inputs.items()
-        }
+        inputs = {k: v.to(device=self.engine.model.device, dtype=self.engine.model.dtype) for k, v in inputs.items()}
 
         t1 = time.perf_counter()
         generated_ids = self.engine.model.generate(
@@ -183,6 +171,8 @@ class WhisperSession:
             skip_special_tokens=True,
         )[0].strip()
 
-        self.audio = np.array([], dtype=np.float32)
+        # 🔥 English-only output gate (drop Hindi/non-ASCII)
+        text = _english_only_filter(text)
 
+        self.audio = np.array([], dtype=np.float32)
         return text

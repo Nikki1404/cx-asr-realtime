@@ -335,7 +335,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 but instead of taking wav file and reference txt from local we will be taking files and reference txt from s3 bucket whisch is available in this way 
-s3://cx-speech/asr-realtime/benchmarking-data-2/
+https://us-east-1.console.aws.amazon.com/s3/buckets/cx-speech?prefix=asr-realtime%2Fbenchmarking-data-2%2F&region=us-east-1
 
 so update my code accordingly 
 

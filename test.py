@@ -44,7 +44,7 @@ def normalize(txt):
 
 
 # -------------------------------------------------
-# S3 HELPERS
+# S3
 # -------------------------------------------------
 def s3_client(region):
     return boto3.client("s3", region_name=region)
@@ -73,7 +73,7 @@ def read_bytes(s3, bucket, key):
 
 
 # -------------------------------------------------
-# AUDIO HELPERS
+# AUDIO
 # -------------------------------------------------
 def wav_to_pcm(wav_blob):
     with wave.open(io.BytesIO(wav_blob), "rb") as wf:
@@ -82,7 +82,7 @@ def wav_to_pcm(wav_blob):
 
 def iter_chunks(pcm):
     for i in range(0, len(pcm), CHUNK_BYTES):
-        yield pcm[i:i + CHUNK_BYTES]
+        yield pcm[i:i+CHUNK_BYTES]
 
 
 def silence(sec):
@@ -90,7 +90,7 @@ def silence(sec):
 
 
 # -------------------------------------------------
-# WEBSOCKET TRANSCRIBE (FINAL VERSION)
+# WEBSOCKET TRANSCRIBE (FINAL FIX)
 # -------------------------------------------------
 async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
@@ -111,7 +111,6 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
                 if not isinstance(msg, str):
                     continue
                 obj = json.loads(msg)
-
                 if obj.get("type") == "final":
                     txt = (obj.get("text") or "").strip()
                     if txt:
@@ -122,15 +121,17 @@ async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
         t0 = time.time()
 
-        # ⭐ FAST STREAMING (NO SLEEP)
         for c in iter_chunks(pcm):
             await ws.send(c)
+            await asyncio.sleep(CHUNK_MS / 1000)
 
-        # ⭐ STRONG END SIGNAL
-        await ws.send(silence(2.0))
+        await ws.send(silence(0.8))
         await ws.send(b"")
 
-        await asyncio.wait_for(done.wait(), timeout=timeout_sec)
+        try:
+            await asyncio.wait_for(done.wait(), timeout=timeout_sec)
+        except asyncio.TimeoutError:
+            print(f"[WARN] timeout ({backend}) — using partial transcript")
 
         latency = int((time.time() - t0) * 1000)
 
@@ -172,7 +173,6 @@ async def main():
 
             ref = read_text(s3, args.bucket, txt_key)
             wav_blob = read_bytes(s3, args.bucket, wav_key)
-
             pcm = wav_to_pcm(wav_blob)
 
             (g, lg), (n, ln), (w, lw) = await asyncio.gather(
@@ -181,7 +181,6 @@ async def main():
                 transcribe_ws(args.url, "whisper", pcm),
             )
 
-            # NORMALIZED TEXT
             ref_n = normalize(ref)
             g_n = normalize(g)
             n_n = normalize(n)
@@ -189,21 +188,25 @@ async def main():
 
             rows.append({
                 "filename": folder,
-
                 "latency_google": lg,
                 "latency_nemotron": ln,
                 "latency_whisper": lw,
+
                 "reference_text": ref,
                 "transcript_google": g,
                 "transcript_nemotron": n,
                 "transcript_whisper": w,
-                "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
-                "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
-                "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
+
+                # ⭐ ADDED NORMALIZED TEXTS
                 "normalized_ref_text": ref_n,
                 "normalized_transcript_google": g_n,
                 "normalized_transcript_nemotron": n_n,
                 "normalized_transcript_whisper": w_n,
+
+                "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
+                "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
+                "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
+
                 "normalized_wer_google": jiwer.wer(ref_n, g_n, norm_transform, norm_transform),
                 "normalized_wer_nemotron": jiwer.wer(ref_n, n_n, norm_transform, norm_transform),
                 "normalized_wer_whisper": jiwer.wer(ref_n, w_n, norm_transform, norm_transform),
@@ -214,11 +217,8 @@ async def main():
             print("DONE:", folder)
 
         except Exception as e:
-            print(f"ERROR: {folder} -> {type(e).__name__}: {e}")
-            rows.append({
-                "filename": folder,
-                "error": str(e)
-            })
+            print(f"ERROR: {folder} -> {e}")
+            rows.append({"filename": folder, "error": str(e)})
 
     df = pd.DataFrame(rows)
 

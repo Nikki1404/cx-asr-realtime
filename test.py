@@ -194,22 +194,17 @@ async def main():
                 "latency_google": lg,
                 "latency_nemotron": ln,
                 "latency_whisper": lw,
-
                 "reference_text": ref,
                 "transcript_google": g,
                 "transcript_nemotron": n,
                 "transcript_whisper": w,
-
-                # ⭐ requested normalized columns
+                "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
+                "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
+                "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
                 "normalized_reference_text": ref_n,
                 "normalized_transcript_google": g_n,
                 "normalized_transcript_nemotron": n_n,
                 "normalized_transcript_whisper": w_n,
-
-                "wer_google": jiwer.wer(ref, g, raw_transform, raw_transform),
-                "wer_nemotron": jiwer.wer(ref, n, raw_transform, raw_transform),
-                "wer_whisper": jiwer.wer(ref, w, raw_transform, raw_transform),
-
                 "normalized_wer_google": jiwer.wer(ref_n, g_n, norm_transform, norm_transform),
                 "normalized_wer_nemotron": jiwer.wer(ref_n, n_n, norm_transform, norm_transform),
                 "normalized_wer_whisper": jiwer.wer(ref_n, w_n, norm_transform, norm_transform),

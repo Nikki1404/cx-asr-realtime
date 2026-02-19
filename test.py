@@ -409,9 +409,23 @@ python .\bench_s3_wide.py `
   --max-files 10 `
   --subset-label "dev-clean"
 
-getting this 
-Default output format [None]:
-(client_env) PS C:\Users\re_nikitav\Desktop\cx-asr-realtime\scripts> aws s3 ls s3://cx-speech
+# AWS
+boto3==1.34.162
 
-An error occurred (InvalidAccessKeyId) when calling the ListObjectsV2 operation: The AWS Access Key Id you provided does not exist in our records.
+# ASR evaluation
+jiwer==3.0.4
+whisper-normalizer==0.1.8
+
+# Audio processing
+numpy==1.26.4
+soundfile==0.12.1
+librosa==0.10.2.post1
+scipy==1.12.0
+
+# Websocket streaming
+websockets==12.0
+
+# Optional but recommended (better performance + stability)
+aiohttp==3.9.5
+
 

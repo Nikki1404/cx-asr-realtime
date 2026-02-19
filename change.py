@@ -1,178 +1,343 @@
+ i want my benchmarking result in this format 
+filename	 	latency_google	latency_nemotron	latency_whisper	 	reference_text	transcript_google	transcript_nemotron	transcript_whisper	wer_google	wer_nemotron wer_whisper	normalized_transcript_nemotron	normalized_transcript_whisper	normalized_transcript_google	normalized_ref_text	 normalized_wer_nemotron normalized_wer_whisper normalized_wer_google 
+ 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 	 
+librispeech:dev-clean/1272/1281041272/128104-0000	 
+
+and earlier I was doing benchmarking in this way 
+import argparse
+import asyncio
+import csv
+import json
 import time
-from typing import Optional
-import unicodedata
+import uuid
+import wave
 import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, List, Tuple, Dict
 
-import numpy as np
-import torch
-from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
-
-from app.asr_engines.base import ASREngine, EngineCaps
-
-
-_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")  # Hindi script range
-_ALLOWED_ASCII_RE = re.compile(r"^[\x00-\x7F]+$")  # basic ASCII
+import jiwer
+import websockets
+from num2words import num2words
 
 
-def _ascii_fold(s: str) -> str:
-    """
-    Convert accented Latin chars to closest ASCII (Halló -> Hallo).
-    Keeps ASCII punctuation/numbers.
-    """
-    s = unicodedata.normalize("NFKD", s)
-    return s.encode("ascii", "ignore").decode("ascii", "ignore")
+TARGET_SR = 16000
+CHUNK_MS = 80
+CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
+
+# NORMALIZATION POLICY
+ABBR_MAP: Dict[str, str] = {
+    "mr": "mister",
+    "mrs": "missus",
+    "ms": "miss",
+    "dr": "doctor",
+    "prof": "professor",
+    "jr": "junior",
+    "sr": "senior",
+}
+
+CONTRACTIONS = {
+    "don't": "do not",
+    "can't": "cannot",
+    "won't": "will not",
+    "it's": "it is",
+    "i'm": "i am",
+    "you're": "you are",
+    "they're": "they are",
+    "we're": "we are",
+    "he's": "he is",
+    "she's": "she is",
+}
 
 
-def _english_only_filter(text: str) -> str:
-    """
-    Enforce 'flush only English' in a practical way:
-    - If Devanagari appears -> drop completely.
-    - Otherwise fold accents to ASCII.
-    - If still contains non-ASCII -> drop.
-    """
-    if not text:
-        return ""
-
-    # Hard block Hindi/Devanagari output
-    if _DEVANAGARI_RE.search(text):
-        return ""
-
-    folded = _ascii_fold(text).strip()
-
-    # If anything non-ascii remains after folding -> drop
-    if folded and not _ALLOWED_ASCII_RE.match(folded):
-        return ""
-
-    return folded
+def expand_contractions(text: str) -> str:
+    for k, v in CONTRACTIONS.items():
+        text = re.sub(rf"\b{k}\b", v, text)
+    return text
 
 
-class WhisperTurboASR(ASREngine):
-    """
-    Chunked (non-streaming) ASR using Whisper Turbo.
+def normalize_numbers(text: str) -> str:
+    # %10 -> ten percent
+    text = re.sub(r"%(\d+)", lambda m: f"{num2words(int(m.group(1)))} percent", text)
 
-    - English prompt enforced (no language auto-detection prompt)
-    - Post-filter drops Hindi/Devanagari and non-ASCII outputs
-    - Final transcription only
-    """
+    # 10% -> ten percent
+    text = re.sub(r"(\d+)%", lambda m: f"{num2words(int(m.group(1)))} percent", text)
 
-    caps = EngineCaps(
-        streaming=False,
-        partials=False,
-        ttft_meaningful=False,
+    # $10 -> ten dollars
+    text = re.sub(r"\$(\d+)", lambda m: f"{num2words(int(m.group(1)))} dollars", text)
+
+    # 21st -> twenty first
+    text = re.sub(
+        r"\b(\d+)(st|nd|rd|th)\b",
+        lambda m: num2words(int(m.group(1)), to="ordinal"),
+        text,
     )
 
-    def __init__(self, model_name: str, device: str, sample_rate: int):
-        self.model_name = model_name
-        self.device = device
-        self.sr = sample_rate
+    # 10 -> ten
+    text = re.sub(
+        r"\b\d+\b",
+        lambda m: num2words(int(m.group())),
+        text,
+    )
 
-        self.model = None
-        self.processor = None
-        self.forced_decoder_ids = None
+    return text
 
-    def load(self) -> float:
-        t0 = time.time()
 
-        self.processor = AutoProcessor.from_pretrained(self.model_name)
-        self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            self.model_name,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-            low_cpu_mem_usage=True,
+def pre_normalize_text(text: str) -> str:
+    text = text.lower()
+    text = expand_contractions(text)
+    text = normalize_numbers(text)
+    text = re.sub(r"[^\w\s]", " ", text)  # remove punctuation
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+# jiwer token transform
+transform = jiwer.Compose([
+    jiwer.SubstituteWords(ABBR_MAP),
+    jiwer.RemoveMultipleSpaces(),
+    jiwer.Strip(),
+    jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
+])
+
+
+# BENCHMARK STRUCT
+@dataclass
+class BenchResult:
+    subset: str
+    file: str
+    backend: str
+    latency_ms: int
+    audio_sec_sent: float
+    ref_text: str
+    hyp_text: str
+    wer: Optional[float]
+    error: Optional[str] = None
+
+
+# DATA LOADING HELPERS
+
+def get_reference_text(wav_path: Path, wav_root: Path, raw_root: Path) -> str:
+    utt_id = wav_path.stem
+    rel = wav_path.relative_to(wav_root)
+    subset, spk, chap = rel.parts[:3]
+
+    trans = raw_root / subset / spk / chap / f"{spk}-{chap}.trans.txt"
+    if not trans.exists():
+        return ""
+
+    with open(trans, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith(utt_id + " "):
+                return line.strip().split(" ", 1)[1]
+    return ""
+
+
+def iter_wav_chunks(path: Path):
+    with wave.open(str(path), "rb") as wf:
+        while True:
+            data = wf.readframes(CHUNK_FRAMES)
+            if not data:
+                break
+            yield data
+
+
+def silence_bytes(sec: float) -> bytes:
+    return b"\x00\x00" * int(TARGET_SR * sec)
+
+
+def parse_pause_spec(spec: str) -> List[Tuple[float, float]]:
+    if not spec:
+        return []
+    out = []
+    for p in spec.split(","):
+        at, dur = p.split(":")
+        out.append((float(at), float(dur)))
+    return sorted(out)
+
+
+# WEBSOCKET TRANSCRIPTION
+async def transcribe_ws(
+    *,
+    url: str,
+    backend: str,
+    wav_path: Path,
+    pause_plan: List[Tuple[float, float]],
+) -> Tuple[str, float, int]:
+
+    async with websockets.connect(url, max_size=None) as ws:
+
+        await ws.send(json.dumps({
+            "type": "config",
+            "backend": backend,
+            "sampling_rate": TARGET_SR,
+            "chunk_ms": CHUNK_MS,
+        }))
+
+        finals = []
+        final_received = asyncio.Event()
+
+        async def receiver():
+            async for msg in ws:
+                if isinstance(msg, str):
+                    obj = json.loads(msg)
+                    if obj.get("type") == "final":
+                        if obj.get("text"):
+                            finals.append(obj["text"].strip())
+                        final_received.set()
+
+        recv_task = asyncio.create_task(receiver())
+
+        frames_sent = 0
+        audio_sec_sent = 0.0
+        pause_idx = 0
+        t_start = time.time()
+
+        # NON-REALTIME: send chunks immediately
+        for chunk in iter_wav_chunks(wav_path):
+
+            while pause_idx < len(pause_plan) and audio_sec_sent >= pause_plan[pause_idx][0]:
+                dur = pause_plan[pause_idx][1]
+                await ws.send(silence_bytes(dur))
+                frames_sent += int(TARGET_SR * dur)
+                audio_sec_sent = frames_sent / TARGET_SR
+                pause_idx += 1
+
+            await ws.send(chunk)
+
+            frames_sent += len(chunk) // 2
+            audio_sec_sent = frames_sent / TARGET_SR
+
+        await ws.send(silence_bytes(0.6))
+        await ws.send(b"")
+
+        await asyncio.wait_for(final_received.wait(), timeout=30)
+
+        latency_ms = int((time.time() - t_start) * 1000)
+
+        await ws.close()
+        recv_task.cancel()
+
+        return " ".join(finals), audio_sec_sent, latency_ms
+
+
+# FILE PROCESSING
+
+async def process_one(
+    *,
+    wav_path: Path,
+    backend: str,
+    url: str,
+    wav_root: Path,
+    raw_root: Path,
+    pause_plan: List[Tuple[float, float]],
+) -> BenchResult:
+
+    subset = wav_path.relative_to(wav_root).parts[0]
+    ref = get_reference_text(wav_path, wav_root, raw_root)
+
+    try:
+        hyp, audio_sec, latency_ms = await transcribe_ws(
+            url=url,
+            backend=backend,
+            wav_path=wav_path,
+            pause_plan=pause_plan,
         )
 
-        if self.device == "cuda":
-            self.model = self.model.cuda()
-        else:
-            self.model = self.model.cpu()
+        wer = None
+        if ref and hyp:
 
-        self.model.eval()
+            ref_n = pre_normalize_text(ref)
+            hyp_n = pre_normalize_text(hyp)
 
-        # Force decoder prompt to English transcription
-        self.forced_decoder_ids = self.processor.get_decoder_prompt_ids(
-            language="en",
-            task="transcribe",
+            wer = jiwer.wer(ref_n, hyp_n, transform, transform)
+            wer = round(float(wer), 4)
+
+        return BenchResult(
+            subset=subset,
+            file=wav_path.name,
+            backend=backend,
+            latency_ms=latency_ms,
+            audio_sec_sent=round(audio_sec, 3),
+            ref_text=ref,
+            hyp_text=hyp,
+            wer=wer,
         )
 
-        self._warmup()
-        return time.time() - t0
+    except Exception as e:
+        return BenchResult(
+            subset=subset,
+            file=wav_path.name,
+            backend=backend,
+            latency_ms=0,
+            audio_sec_sent=0.0,
+            ref_text=ref,
+            hyp_text="",
+            wer=None,
+            error=str(e),
+        )
 
-    @torch.inference_mode()
-    def _warmup(self):
-        try:
-            silence = np.zeros(int(self.sr * 1.0), dtype=np.float32)
-            inputs = self.processor(
-                silence,
-                sampling_rate=self.sr,
-                return_tensors="pt",
+
+async def process_one_triple(**kwargs):
+    return await asyncio.gather(
+        process_one(backend="nemotron", **kwargs),
+        process_one(backend="whisper", **kwargs),
+        process_one(backend="google", **kwargs),
+    )
+
+
+# MAIN
+async def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--url", default="wss://whisperstream.exlservice.com:3000/asr/realtime-custom-vad")
+    p.add_argument("--data-wav-root", required=True)
+    p.add_argument("--raw-librispeech-root", required=True)
+    p.add_argument("--max-files", type=int, default=20)
+    p.add_argument("--inject-pause", default="")
+    args = p.parse_args()
+
+    wav_root = Path(args.data_wav_root)
+    raw_root = Path(args.raw_librispeech_root)
+    wavs = sorted(wav_root.rglob("*.wav"))[: args.max_files]
+
+    pause_plan = parse_pause_spec(args.inject_pause)
+    results: List[BenchResult] = []
+
+    for wav in wavs:
+        triple = await process_one_triple(
+            wav_path=wav,
+            url=args.url,
+            wav_root=wav_root,
+            raw_root=raw_root,
+            pause_plan=pause_plan,
+        )
+
+        results.extend(triple)
+
+        for r in triple:
+            print(
+                f"{r.backend:9s} {r.file} "
+                f"latency={r.latency_ms}ms wer={r.wer}"
             )
-            inputs = {k: v.to(device=self.model.device, dtype=self.model.dtype) for k, v in inputs.items()}
-            _ = self.model.generate(
-                **inputs,
-                forced_decoder_ids=self.forced_decoder_ids,
-                max_new_tokens=16,
-            )
-        except Exception:
-            pass
 
-    def new_session(self, max_buffer_ms: int):
-        return WhisperSession(self, max_buffer_ms=max_buffer_ms)
+    out_csv = f"bench_realtime_triple_{uuid.uuid4().hex[:8]}.csv"
+
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(BenchResult.__dataclass_fields__.keys())
+        for r in results:
+            w.writerow(r.__dict__.values())
+
+    print(f"\nSaved → {out_csv}")
 
 
-class WhisperSession:
-    def __init__(self, engine: WhisperTurboASR, max_buffer_ms: int):
-        self.engine = engine
-        self.max_buffer_samples = int(engine.sr * (max_buffer_ms / 1000.0))
-        self.audio = np.array([], dtype=np.float32)
+if __name__ == "__main__":
+    asyncio.run(main())
 
-        self.utt_preproc = 0.0
-        self.utt_infer = 0.0
-        self.utt_flush = 0.0
-        self.chunks = 0
+but instead of taking wav file and reference txt from local we will be taking files and reference txt from s3 bucket whisch is available in this way 
+s3://cx-speech/asr-realtime/benchmarking-data-2/
 
-    def accept_pcm16(self, pcm16: bytes):
-        x = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
-        self.audio = np.concatenate([self.audio, x])
-        if len(self.audio) > self.max_buffer_samples:
-            self.audio = self.audio[-self.max_buffer_samples:]
+so update my code accordingly 
 
-    def step_if_ready(self) -> Optional[str]:
-        return None
 
-    @torch.inference_mode()
-    def finalize(self, pad_ms: int) -> str:
-        if len(self.audio) == 0:
-            return ""
-
-        pad = np.zeros(int(self.engine.sr * (pad_ms / 1000.0)), dtype=np.float32)
-        audio = np.concatenate([self.audio, pad])
-
-        t0 = time.perf_counter()
-        inputs = self.engine.processor(
-            audio,
-            sampling_rate=self.engine.sr,
-            return_tensors="pt",
-        )
-        self.utt_preproc += (time.perf_counter() - t0)
-
-        inputs = {k: v.to(device=self.engine.model.device, dtype=self.engine.model.dtype) for k, v in inputs.items()}
-
-        t1 = time.perf_counter()
-        generated_ids = self.engine.model.generate(
-            **inputs,
-            max_new_tokens=444,
-            forced_decoder_ids=self.engine.forced_decoder_ids,
-        )
-        self.utt_infer += (time.perf_counter() - t1)
-
-        self.chunks += 1
-
-        text = self.engine.processor.batch_decode(
-            generated_ids,
-            skip_special_tokens=True,
-        )[0].strip()
-
-        # 🔥 English-only output gate (drop Hindi/non-ASCII)
-        text = _english_only_filter(text)
-
-        self.audio = np.array([], dtype=np.float32)
-        return text
+ 

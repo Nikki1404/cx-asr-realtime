@@ -400,3 +400,12 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+python .\bench_s3_wide.py `
+  --url "wss://whisperstream.exlservice.com:3000/asr/realtime-custom-vad" `
+  --bucket "cx-speech" `
+  --prefix "asr-realtime/benchmarking-data-2/" `
+  --region "us-east-1" `
+  --max-files 10 `
+  --subset-label "dev-clean"
+

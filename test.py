@@ -13,9 +13,9 @@ import websockets
 from whisper_normalizer.english import EnglishTextNormalizer
 
 
-# ==================================================
+# =====================================================
 # CONFIG
-# ==================================================
+# =====================================================
 
 TARGET_SR = 16000
 CHUNK_MS = 80
@@ -38,14 +38,12 @@ token_transform = jiwer.Compose([
     jiwer.ReduceToListOfListOfWords(word_delimiter=" "),
 ])
 
-s3 = boto3.client("s3")
 
-
-# ==================================================
+# =====================================================
 # S3 HELPERS
-# ==================================================
+# =====================================================
 
-def list_folders(bucket, prefix):
+def list_folders(s3, bucket, prefix):
     resp = s3.list_objects_v2(
         Bucket=bucket,
         Prefix=prefix,
@@ -54,45 +52,51 @@ def list_folders(bucket, prefix):
     return [x["Prefix"] for x in resp.get("CommonPrefixes", [])]
 
 
-def list_objects(bucket, prefix):
+def list_objects(s3, bucket, prefix):
     resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
     return [x["Key"] for x in resp.get("Contents", [])]
 
 
-def read_text(bucket, key):
+def read_text(s3, bucket, key):
     obj = s3.get_object(Bucket=bucket, Key=key)
     return obj["Body"].read().decode("utf-8").strip()
 
 
-def read_bytes(bucket, key):
+def read_bytes(s3, bucket, key):
     obj = s3.get_object(Bucket=bucket, Key=key)
     return obj["Body"].read()
 
 
-# ==================================================
+# =====================================================
 # AUDIO
-# ==================================================
+# =====================================================
 
 def wav_to_pcm(wav_bytes):
-
     with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
         pcm = wf.readframes(wf.getnframes())
-
     return pcm
 
 
 def iter_chunks(pcm):
     for i in range(0, len(pcm), CHUNK_BYTES):
-        yield pcm[i:i+CHUNK_BYTES]
+        yield pcm[i:i + CHUNK_BYTES]
 
 
 def silence(sec):
     return b"\x00\x00" * int(TARGET_SR * sec)
 
 
-# ==================================================
+# =====================================================
+# NORMALIZATION
+# =====================================================
+
+def norm(text):
+    return normalizer(text or "")
+
+
+# =====================================================
 # WEBSOCKET TRANSCRIBE
-# ==================================================
+# =====================================================
 
 async def transcribe(url, backend, pcm):
 
@@ -136,27 +140,20 @@ async def transcribe(url, backend, pcm):
         return " ".join(finals), latency
 
 
-# ==================================================
-# NORMALIZATION
-# ==================================================
-
-def norm(t):
-    return normalizer(t or "")
-
-
-# ==================================================
+# =====================================================
 # PROCESS SINGLE FOLDER
-# ==================================================
+# =====================================================
 
-async def process_folder(url, bucket, folder):
+async def process_folder(s3, url, bucket, folder):
 
-    keys = list_objects(bucket, folder)
+    keys = list_objects(s3, bucket, folder)
 
     wav_key = [k for k in keys if k.endswith(".wav")][0]
     txt_key = [k for k in keys if k.endswith("transcript.txt")][0]
 
-    ref = read_text(bucket, txt_key)
-    wav_bytes = read_bytes(bucket, wav_key)
+    ref = read_text(s3, bucket, txt_key)
+    wav_bytes = read_bytes(s3, bucket, wav_key)
+
     pcm = wav_to_pcm(wav_bytes)
 
     results = await asyncio.gather(
@@ -169,7 +166,6 @@ async def process_folder(url, bucket, folder):
     n_txt, n_lat = results[1]
     w_txt, w_lat = results[2]
 
-    # normalization
     ref_n = norm(ref)
     g_n = norm(g_txt)
     n_n = norm(n_txt)
@@ -197,20 +193,26 @@ async def process_folder(url, bucket, folder):
     }
 
 
-# ==================================================
+# =====================================================
 # MAIN
-# ==================================================
+# =====================================================
 
 async def main():
 
     parser = argparse.ArgumentParser()
+
     parser.add_argument("--bucket", default="cx-speech")
     parser.add_argument("--prefix", default="asr-realtime/benchmarking-data-3/")
+    parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--url", required=True)
     parser.add_argument("--max-folders", type=int, default=None)
+
     args = parser.parse_args()
 
-    folders = list_folders(args.bucket, args.prefix)
+    # REGION EXPLICITLY SET
+    s3 = boto3.client("s3", region_name=args.region)
+
+    folders = list_folders(s3, args.bucket, args.prefix)
 
     if args.max_folders:
         folders = folders[:args.max_folders]
@@ -221,7 +223,7 @@ async def main():
 
     for f in folders:
         print("Running:", f)
-        row = await process_folder(args.url, args.bucket, f)
+        row = await process_folder(s3, args.url, args.bucket, f)
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -234,5 +236,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-python3 benchmark_s3_wav.py --url wss://whisperstream.exlservice.com:3000/asr/realtime-custom-vad --max-folders 5

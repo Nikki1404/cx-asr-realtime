@@ -1,0 +1,38 @@
+Additional Real-Time ASR Observations From Our Deployment
+
+True Incremental Decoding Behavior
+During live testing, we observed stable incremental hypothesis refinement — partial transcripts were emitted quickly and then corrected gracefully without large re-writes. This reduced perceptible jitter in UI display compared to buffered chunk-based systems.
+
+Lower Time-To-First-Token (TTFT / TTFA)
+In our streaming benchmarks (using ~80–160 ms chunk sizes), the model produced partial hypotheses quickly after first chunk ingestion. This makes it better suited for conversational AI turn-taking where fast agent interruption handling is required.
+
+Stable Real-Time Factor (RTF < 1 under load)
+Under concurrent stream testing, the model maintained sub-real-time processing speed (RTF < 1) across multiple parallel sessions on a single GPU. This confirms its suitability for production multi-agent environments rather than single-user demos.
+
+Efficient GPU Memory Utilization via Context Caching
+Because encoder states are reused instead of recomputed, GPU memory growth per stream was predictable and linear. This allowed us to model safe concurrency limits more accurately compared to Whisper-style chunk reprocessing.
+
+Better Suitability for Duplex Voice Agents
+Since the model emits partial transcripts early, it enables:
+
+Faster LLM triggering for response generation
+
+Smarter barge-in detection
+
+Improved silence threshold handling
+This is particularly relevant for future two-way conversational agents beyond transcript-only use cases.
+
+Cleaner WebSocket-Based Streaming Integration
+The model integrates cleanly into a WebSocket streaming server architecture where audio frames are pushed incrementally and transcripts are streamed back as JSON events. This matched well with our async event loop architecture and did not require custom patching.
+
+Improved Parallelism Scaling vs Re-buffering Models
+Because it does not re-encode historical audio on every chunk, scaling concurrency did not result in exponential compute overhead. This is a major production advantage for real-time IVR or multi-agent deployments.
+
+Native Support for Punctuation & Capitalization
+The streaming outputs include well-formed text without requiring a separate punctuation restoration model, reducing post-processing latency in the real-time pipeline.
+
+More Predictable Latency Curve
+When measuring latency across different chunk sizes, we observed smoother scaling behavior compared to models that rely on fixed window inference. This gives more flexibility in tuning chunk size for optimal latency vs accuracy tradeoff.
+
+Production-Friendly Architecture
+Compared to Parakeet (which required an additional exposed service), Nemotron Streaming was easier to containerize within our existing inference stack and did not require additional service orchestration.

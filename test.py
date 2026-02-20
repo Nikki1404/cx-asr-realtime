@@ -1,12 +1,3 @@
-TARGET_SR = 16000
-CHUNK_MS = 80
-
-MODELS = [
-    "google",
-    "nemotron",
-    "whisper",
-]
-
 import argparse
 import asyncio
 import io
@@ -24,9 +15,9 @@ from whisper_normalizer.english import EnglishTextNormalizer
 import config
 
 
-# =====================================================
+# -------------------------------------------------
 # CONFIG
-# =====================================================
+# -------------------------------------------------
 
 TARGET_SR = config.TARGET_SR
 CHUNK_MS = config.CHUNK_MS
@@ -35,7 +26,7 @@ MODELS = config.MODELS
 CHUNK_FRAMES = int(TARGET_SR * CHUNK_MS / 1000)
 CHUNK_BYTES = CHUNK_FRAMES * 2
 
-normalizer = EnglishTextNormalizer()
+whisper_norm = EnglishTextNormalizer()
 
 raw_transform = jiwer.Compose([
     jiwer.ToLowerCase(),
@@ -53,12 +44,12 @@ norm_transform = jiwer.Compose([
 
 
 def normalize(txt):
-    return normalizer(txt or "")
+    return whisper_norm(txt or "")
 
 
-# =====================================================
+# -------------------------------------------------
 # S3 HELPERS
-# =====================================================
+# -------------------------------------------------
 
 def s3_client(region):
     return boto3.client("s3", region_name=region)
@@ -86,9 +77,9 @@ def read_bytes(s3, bucket, key):
     return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
 
 
-# =====================================================
-# AUDIO
-# =====================================================
+# -------------------------------------------------
+# AUDIO HELPERS
+# -------------------------------------------------
 
 def wav_to_pcm(wav_blob):
     with wave.open(io.BytesIO(wav_blob), "rb") as wf:
@@ -104,11 +95,11 @@ def silence(sec):
     return b"\x00\x00" * int(TARGET_SR * sec)
 
 
-# =====================================================
-# TRANSCRIBE
-# =====================================================
+# -------------------------------------------------
+# WEBSOCKET TRANSCRIBE (UNCHANGED)
+# -------------------------------------------------
 
-async def transcribe_ws(url, backend, pcm):
+async def transcribe_ws(url, backend, pcm, timeout_sec=120):
 
     async with websockets.connect(url, max_size=None) as ws:
 
@@ -144,7 +135,7 @@ async def transcribe_ws(url, backend, pcm):
         await ws.send(silence(1.0))
         await ws.send(b"")
 
-        await asyncio.wait_for(done.wait(), timeout=120)
+        await asyncio.wait_for(done.wait(), timeout=timeout_sec)
 
         latency = int((time.time() - t0) * 1000)
 
@@ -153,9 +144,9 @@ async def transcribe_ws(url, backend, pcm):
         return " ".join(finals).strip(), latency
 
 
-# =====================================================
+# -------------------------------------------------
 # MAIN
-# =====================================================
+# -------------------------------------------------
 
 async def main():
 
@@ -175,23 +166,6 @@ async def main():
     if args.max_files > 0:
         folders = folders[:args.max_files]
 
-    N = len(MODELS)
-
-    columns = [''] * (5 * N + 3)
-
-    columns[0] = "file"
-    columns[2 * N + 1] = "ref_text"
-    columns[3 * N + 2] = "normalized_ref_text"
-
-    for idx, model in enumerate(MODELS):
-        columns[idx + 1] = f"wer_{model}"
-        columns[idx + 1 + N] = f"latency_ms_{model}"
-        columns[idx + 2 + 2 * N] = f"transcript_{model}"
-        columns[idx + 3 + 3 * N] = f"normalized_transcript_{model}"
-        columns[idx + 3 + 4 * N] = f"normalized_wer_{model}"
-
-    df = pd.DataFrame(columns=columns)
-
     rows = []
 
     for folder in folders:
@@ -206,50 +180,45 @@ async def main():
             wav_blob = read_bytes(s3, args.bucket, wav_key)
             pcm = wav_to_pcm(wav_blob)
 
-            (g, lg), (n, ln), (w, lw) = await asyncio.gather(
-                transcribe_ws(args.url, "google", pcm),
-                transcribe_ws(args.url, "nemotron", pcm),
-                transcribe_ws(args.url, "whisper", pcm),
+            # 🔥 ONLY CHANGE → DYNAMIC MODELS
+            results = await asyncio.gather(
+                *[transcribe_ws(args.url, m, pcm) for m in MODELS]
             )
 
             ref_n = normalize(ref)
-            g_n = normalize(g)
-            n_n = normalize(n)
-            w_n = normalize(w)
 
-            row = [''] * (5 * N + 3)
+            row = {
+                "filename": folder,
+                "reference_text": ref,
+                "normalized_ref_text": ref_n,
+            }
 
-            row[0] = folder
-            row[2 * N + 1] = ref
-            row[3 * N + 2] = ref_n
+            for model, (hyp, latency) in zip(MODELS, results):
 
-            # google
-            row[1] = jiwer.wer(ref, g, raw_transform, raw_transform)
-            row[1 + N] = lg
-            row[2 + 2 * N] = g
-            row[3 + 3 * N] = g_n
-            row[3 + 4 * N] = jiwer.wer(ref_n, g_n, norm_transform, norm_transform)
+                hyp_n = normalize(hyp)
 
-            # nemotron
-            row[2] = jiwer.wer(ref, n, raw_transform, raw_transform)
-            row[2 + N] = ln
-            row[3 + 2 * N] = n
-            row[4 + 3 * N] = n_n
-            row[4 + 4 * N] = jiwer.wer(ref_n, n_n, norm_transform, norm_transform)
-
-            # whisper
-            row[3] = jiwer.wer(ref, w, raw_transform, raw_transform)
-            row[3 + N] = lw
-            row[4 + 2 * N] = w
-            row[5 + 3 * N] = w_n
-            row[5 + 4 * N] = jiwer.wer(ref_n, w_n, norm_transform, norm_transform)
+                row[f"latency_{model}"] = latency
+                row[f"transcript_{model}"] = hyp
+                row[f"wer_{model}"] = jiwer.wer(
+                    ref, hyp, raw_transform, raw_transform
+                )
+                row[f"normalized_transcript_{model}"] = hyp_n
+                row[f"normalized_wer_{model}"] = jiwer.wer(
+                    ref_n, hyp_n, norm_transform, norm_transform
+                )
 
             rows.append(row)
 
-        except Exception as e:
-            print("ERROR:", folder, e)
+            print("DONE:", folder)
 
-    df = pd.DataFrame(rows, columns=columns)
+        except Exception as e:
+            print(f"ERROR: {folder} -> {type(e).__name__}: {e}")
+            rows.append({
+                "filename": folder,
+                "error": str(e)
+            })
+
+    df = pd.DataFrame(rows)
 
     out = f"bench_s3_dynamic_{uuid.uuid4().hex[:8]}.csv"
     df.to_csv(out, index=False)
@@ -259,6 +228,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-python3 asr_s3_benchmark.py --url wss://whisperstream.exlservice.com:3000/asr/realtime-custom-vad --max-files 20

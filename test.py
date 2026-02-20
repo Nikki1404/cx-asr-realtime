@@ -259,3 +259,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+python3 asr_s3_benchmark.py --url wss://whisperstream.exlservice.com:3000/asr/realtime-custom-vad --max-files 20

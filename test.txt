@@ -1,18 +1,10 @@
-True Streaming (No Re-buffering)
+WER Performance on Benchmark Dataset
 
-In our real-time pipeline (WebSocket audio ingestion with ~80–160ms PCM chunks), the model processed only incremental audio without re-encoding historical context. This resulted in:
+Evaluated using Librispeech samples (aligned with HF leaderboard dataset).
 
-Lower cumulative compute per stream
+Competitive or improved WER compared to Whisper in streaming mode.
 
-Stable inference time per chunk
-
-No latency spikes as utterance duration increased
-
-This behavior is critical for long conversational sessions where buffered models degrade over time.
-
-Improved silence threshold handling
-This is particularly relevant for future two-way conversational agents beyond transcript-only use cases.
-
+More stable incremental hypothesis refinement.
 Cleaner WebSocket-Based Streaming Integration
 The model integrates cleanly into a WebSocket streaming server architecture where audio frames are pushed incrementally and transcripts are streamed back as JSON events. This matched well with our async event loop architecture and did not require custom patching.
 

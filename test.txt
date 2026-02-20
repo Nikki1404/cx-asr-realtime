@@ -1,23 +1,14 @@
-Additional Real-Time ASR Observations From Our Deployment
+True Streaming (No Re-buffering)
 
-True Incremental Decoding Behavior
-During live testing, we observed stable incremental hypothesis refinement — partial transcripts were emitted quickly and then corrected gracefully without large re-writes. This reduced perceptible jitter in UI display compared to buffered chunk-based systems.
+In our real-time pipeline (WebSocket audio ingestion with ~80–160ms PCM chunks), the model processed only incremental audio without re-encoding historical context. This resulted in:
 
-Lower Time-To-First-Token (TTFT / TTFA)
-In our streaming benchmarks (using ~80–160 ms chunk sizes), the model produced partial hypotheses quickly after first chunk ingestion. This makes it better suited for conversational AI turn-taking where fast agent interruption handling is required.
+Lower cumulative compute per stream
 
-Stable Real-Time Factor (RTF < 1 under load)
-Under concurrent stream testing, the model maintained sub-real-time processing speed (RTF < 1) across multiple parallel sessions on a single GPU. This confirms its suitability for production multi-agent environments rather than single-user demos.
+Stable inference time per chunk
 
-Efficient GPU Memory Utilization via Context Caching
-Because encoder states are reused instead of recomputed, GPU memory growth per stream was predictable and linear. This allowed us to model safe concurrency limits more accurately compared to Whisper-style chunk reprocessing.
+No latency spikes as utterance duration increased
 
-Better Suitability for Duplex Voice Agents
-Since the model emits partial transcripts early, it enables:
-
-Faster LLM triggering for response generation
-
-Smarter barge-in detection
+This behavior is critical for long conversational sessions where buffered models degrade over time.
 
 Improved silence threshold handling
 This is particularly relevant for future two-way conversational agents beyond transcript-only use cases.

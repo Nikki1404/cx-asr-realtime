@@ -7,19 +7,18 @@ MODELS = [
     "whisper",
 ]
 
-
+import argparse
 import asyncio
 import io
 import json
 import time
 import uuid
 import wave
-from pathlib import Path
 
+import boto3
 import jiwer
 import pandas as pd
 import websockets
-from tqdm import tqdm
 from whisper_normalizer.english import EnglishTextNormalizer
 
 import config
@@ -55,6 +54,36 @@ norm_transform = jiwer.Compose([
 
 def normalize(txt):
     return normalizer(txt or "")
+
+
+# =====================================================
+# S3 HELPERS
+# =====================================================
+
+def s3_client(region):
+    return boto3.client("s3", region_name=region)
+
+
+def list_folders(s3, bucket, prefix):
+    resp = s3.list_objects_v2(
+        Bucket=bucket,
+        Prefix=prefix,
+        Delimiter="/"
+    )
+    return [x["Prefix"] for x in resp.get("CommonPrefixes", [])]
+
+
+def list_objects(s3, bucket, prefix):
+    resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    return [x["Key"] for x in resp.get("Contents", [])]
+
+
+def read_text(s3, bucket, key):
+    return s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode().strip()
+
+
+def read_bytes(s3, bucket, key):
+    return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
 
 
 # =====================================================
@@ -130,115 +159,102 @@ async def transcribe_ws(url, backend, pcm):
 
 async def main():
 
-    url = input("Enter websocket URL: ")
-    root_path = Path(input("Enter your test folder path: "))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bucket", default="cx-speech")
+    parser.add_argument("--prefix", default="asr-realtime/benchmarking-data-3/")
+    parser.add_argument("--region", default="us-east-1")
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--max-files", type=int, default=0)
+
+    args = parser.parse_args()
+
+    s3 = s3_client(args.region)
+
+    folders = list_folders(s3, args.bucket, args.prefix)
+
+    if args.max_files > 0:
+        folders = folders[:args.max_files]
+
+    N = len(MODELS)
+
+    columns = [''] * (5 * N + 3)
+
+    columns[0] = "file"
+    columns[2 * N + 1] = "ref_text"
+    columns[3 * N + 2] = "normalized_ref_text"
+
+    for idx, model in enumerate(MODELS):
+        columns[idx + 1] = f"wer_{model}"
+        columns[idx + 1 + N] = f"latency_ms_{model}"
+        columns[idx + 2 + 2 * N] = f"transcript_{model}"
+        columns[idx + 3 + 3 * N] = f"normalized_transcript_{model}"
+        columns[idx + 3 + 4 * N] = f"normalized_wer_{model}"
+
+    df = pd.DataFrame(columns=columns)
 
     rows = []
 
-    for folder in tqdm(list(root_path.iterdir())):
-
-        if not folder.is_dir():
-            continue
-
-        wav_path = next(folder.glob("*.wav"), None)
-        txt_path = next(folder.glob("*.txt"), None)
-
-        if not wav_path or not txt_path:
-            continue
+    for folder in folders:
 
         try:
-            ref = txt_path.read_text().strip()
-            pcm = wav_to_pcm(wav_path.read_bytes())
+            keys = list_objects(s3, args.bucket, folder)
 
-            results = await asyncio.gather(
-                *[transcribe_ws(url, m, pcm) for m in MODELS]
+            wav_key = [k for k in keys if k.endswith(".wav")][0]
+            txt_key = [k for k in keys if k.endswith("transcript.txt")][0]
+
+            ref = read_text(s3, args.bucket, txt_key)
+            wav_blob = read_bytes(s3, args.bucket, wav_key)
+            pcm = wav_to_pcm(wav_blob)
+
+            (g, lg), (n, ln), (w, lw) = await asyncio.gather(
+                transcribe_ws(args.url, "google", pcm),
+                transcribe_ws(args.url, "nemotron", pcm),
+                transcribe_ws(args.url, "whisper", pcm),
             )
 
             ref_n = normalize(ref)
+            g_n = normalize(g)
+            n_n = normalize(n)
+            w_n = normalize(w)
 
-            row = {}
+            row = [''] * (5 * N + 3)
 
-            # ----------------------------------
-            # 1️⃣ filename
-            # ----------------------------------
-            row["filename"] = folder.name
+            row[0] = folder
+            row[2 * N + 1] = ref
+            row[3 * N + 2] = ref_n
 
-            # ----------------------------------
-            # 2️⃣ latency_{model}
-            # ----------------------------------
-            for model, (_, latency) in zip(MODELS, results):
-                row[f"latency_{model}"] = latency
+            # google
+            row[1] = jiwer.wer(ref, g, raw_transform, raw_transform)
+            row[1 + N] = lg
+            row[2 + 2 * N] = g
+            row[3 + 3 * N] = g_n
+            row[3 + 4 * N] = jiwer.wer(ref_n, g_n, norm_transform, norm_transform)
 
-            # ----------------------------------
-            # 3️⃣ reference_text
-            # ----------------------------------
-            row["reference_text"] = ref
+            # nemotron
+            row[2] = jiwer.wer(ref, n, raw_transform, raw_transform)
+            row[2 + N] = ln
+            row[3 + 2 * N] = n
+            row[4 + 3 * N] = n_n
+            row[4 + 4 * N] = jiwer.wer(ref_n, n_n, norm_transform, norm_transform)
 
-            # ----------------------------------
-            # 4️⃣ transcript_{model}
-            # ----------------------------------
-            for model, (hyp, _) in zip(MODELS, results):
-                row[f"transcript_{model}"] = hyp
-
-            # ----------------------------------
-            # 5️⃣ wer_{model}
-            # ----------------------------------
-            for model, (hyp, _) in zip(MODELS, results):
-                row[f"wer_{model}"] = jiwer.wer(
-                    ref,
-                    hyp,
-                    raw_transform,
-                    raw_transform
-                )
-
-            # ----------------------------------
-            # 6️⃣ normalized_ref_text
-            # ----------------------------------
-            row["normalized_ref_text"] = ref_n
-
-            # ----------------------------------
-            # 7️⃣ normalized_transcript_{model}
-            # ----------------------------------
-            for model, (hyp, _) in zip(MODELS, results):
-                row[f"normalized_transcript_{model}"] = normalize(hyp)
-
-            # ----------------------------------
-            # 8️⃣ normalized_wer_{model}
-            # ----------------------------------
-            for model, (hyp, _) in zip(MODELS, results):
-                row[f"normalized_wer_{model}"] = jiwer.wer(
-                    ref_n,
-                    normalize(hyp),
-                    norm_transform,
-                    norm_transform
-                )
+            # whisper
+            row[3] = jiwer.wer(ref, w, raw_transform, raw_transform)
+            row[3 + N] = lw
+            row[4 + 2 * N] = w
+            row[5 + 3 * N] = w_n
+            row[5 + 4 * N] = jiwer.wer(ref_n, w_n, norm_transform, norm_transform)
 
             rows.append(row)
 
         except Exception as e:
-            print("ERROR:", folder.name, e)
+            print("ERROR:", folder, e)
 
-    # -------------------------------------------------
-    # FORCE COLUMN ORDER EXACTLY AS REQUESTED
-    # -------------------------------------------------
+    df = pd.DataFrame(rows, columns=columns)
 
-    ordered_columns = ["filename"]
+    out = f"bench_s3_dynamic_{uuid.uuid4().hex[:8]}.csv"
+    df.to_csv(out, index=False)
 
-    ordered_columns += [f"latency_{m}" for m in MODELS]
-    ordered_columns += ["reference_text"]
-    ordered_columns += [f"transcript_{m}" for m in MODELS]
-    ordered_columns += [f"wer_{m}" for m in MODELS]
-    ordered_columns += ["normalized_ref_text"]
-    ordered_columns += [f"normalized_transcript_{m}" for m in MODELS]
-    ordered_columns += [f"normalized_wer_{m}" for m in MODELS]
-
-    df = pd.DataFrame(rows)
-    df = df[ordered_columns]
-
-    save_filename = f"bench_realtime_full_{uuid.uuid4().hex[:8]}.xlsx"
-    df.to_excel(save_filename, index=False)
-
-    print("\nSaved →", save_filename)
+    print("\nSaved →", out)
 
 
 if __name__ == "__main__":

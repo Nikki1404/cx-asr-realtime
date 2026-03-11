@@ -1,87 +1,28 @@
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM python:3.11-slim
 
-# ============================
-# Build & Runtime proxy control
-# ============================
 ARG USE_PROXY=false
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
 
-# Empty by default (K8s-safe)
-ENV http_proxy=""
-ENV https_proxy=""
-
-# Enable proxy ONLY if explicitly requested
-RUN if [ "$USE_PROXY" = "true" ]; then \
-        echo "🔐 Enabling proxy"; \
-        export http_proxy=${HTTP_PROXY}; \
-        export https_proxy=${HTTPS_PROXY}; \
-        echo "http_proxy=${HTTP_PROXY}" >> /etc/environment; \
-        echo "https_proxy=${HTTPS_PROXY}" >> /etc/environment; \
-    else \
-        echo "🌐 Proxy disabled"; \
-    fi
-
-# ============================
-# Runtime environment
-# ============================
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/srv \
-    HF_HOME=/srv/hf_cache \
-    TRANSFORMERS_CACHE=/srv/hf_cache \
-    TORCH_HOME=/srv/hf_cache \
-    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+# Set proxy only if USE_PROXY=true
+ENV http_proxy=${USE_PROXY:+http://163.116.128.80:8080}
+ENV https_proxy=${USE_PROXY:+http://163.116.128.80:8080}
 
 WORKDIR /srv
 
-# ============================
-# System dependencies
-# ============================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 \
-    python3-pip \
-    python3-dev \
-    git \
-    ffmpeg \
-    build-essential \
-    libsndfile1 \
-    libsox-dev \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
 
-# ============================
-# Python tooling
-# ============================
-RUN python3 -m pip install -U pip setuptools wheel
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir -r requirements.txt
 
-# ============================
-# App dependencies (NumPy < 2)
-# ============================
-COPY requirements.txt /srv/requirements.txt
-RUN python3.10 -m pip install --no-cache-dir -r /srv/requirements.txt
+COPY download_model/nemotron-speech-streaming/nemotron-speech-streaming-en-0.6b.nemo .
+COPY app ./app
+COPY app/google_credentials.json google_credentials.json
 
-# ============================
-# NeMo (same behavior as working image)
-# ============================
-RUN python3 -m pip install --no-cache-dir \
-    "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main"
+ENV GOOGLE_APPLICATION_CREDENTIALS=/srv/google_credentials.json
+ENV GOOGLE_RECOGNIZER=projects/eci-ugi-digital-ccaipoc/locations/us-central1/recognizers/google-stt-default
+ENV GOOGLE_REGION=us-central1
+ENV GOOGLE_LANGUAGE=en-US
+ENV GOOGLE_MODEL=latest_short
+ENV GOOGLE_INTERIM=true
+ENV GOOGLE_EXPLICIT_DECODING=true
 
-# ============================
-# Torch LAST (lock CUDA ABI)
-# ============================
-RUN python3 -m pip install --no-cache-dir --force-reinstall \
-    --index-url https://download.pytorch.org/whl/cu124 \
-    torch==2.5.1 \
-    torchaudio==2.5.1
-
-# ============================
-# Application code
-# ============================
-COPY app /srv/app
-COPY scripts /srv/scripts
-
-EXPOSE 8002
-
-CMD ["python3", "scripts/run_server.py", "--host", "0.0.0.0", "--port", "8002"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8003"]
